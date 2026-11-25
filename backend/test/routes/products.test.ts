@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { UpstreamError } from '../../src/errors.js';
+import { createFakeStoreRepository, imageResponse } from '../support/fakeStore.js';
 import { buildProduct, FakeProductRepository } from '../support/fakes.js';
 import { createTestApp } from '../support/testApp.js';
 
@@ -93,6 +94,30 @@ describe('GET /products (AC-3, §6.4)', () => {
     expect(response.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  describe('absent vs present-but-empty params (§6.4)', () => {
+    it.each(['category', 'minPrice', 'sort', 'page'])('rejects ?%s= (present but empty) with 400', async (param) => {
+      const { app } = createTestApp({ products: catalogue });
+      const response = await request(app).get(`/products?${param}=`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.error.message).toContain(param);
+    });
+
+    it('rejects a whitespace-only category with 400', async () => {
+      const { app } = createTestApp({ products: catalogue });
+      expect((await request(app).get('/products?category=%20%20')).status).toBe(400);
+    });
+
+    it('does not apply absent params (no filter, default sort and paging)', async () => {
+      const { app } = createTestApp({ products: catalogue });
+      const response = await request(app).get('/products?q=ring');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ total: 2, page: 1, pageSize: 20 });
+    });
+  });
+
   it('rejects a repeated param with 400', async () => {
     const { app } = createTestApp({ products: catalogue });
     const response = await request(app).get('/products?q=ring&q=bag');
@@ -149,6 +174,29 @@ describe('GET /products/:id/image (§6.6, D-001)', () => {
   it('returns 400 for an invalid id', async () => {
     const { app } = createTestApp({ products: catalogue });
     expect((await request(app).get('/products/abc/image')).status).toBe(400);
+  });
+
+  it('returns 502 when the upstream image is an SVG (real repository, D-001)', async () => {
+    const { repository } = createFakeStoreRepository({
+      image: () => imageResponse('image/svg+xml', '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'),
+    });
+    const { app } = createTestApp({ productRepository: repository });
+    const response = await request(app).get('/products/1/image');
+
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({
+      error: { code: 'UPSTREAM_ERROR', message: 'A service we depend on is unavailable. Please try again later.' },
+    });
+    expect(response.headers['content-type']).toContain('application/json');
+  });
+
+  it('serves an allowed type from the real repository with the normalised content type', async () => {
+    const { repository } = createFakeStoreRepository({ image: () => imageResponse('image/JPEG; charset=binary') });
+    const { app } = createTestApp({ productRepository: repository });
+    const response = await request(app).get('/products/1/image').buffer(true);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('image/jpeg');
   });
 
   it('returns 502 without upstream details when the image fetch fails', async () => {
