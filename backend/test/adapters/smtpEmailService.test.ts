@@ -1,6 +1,8 @@
+import { type AddressInfo, createServer, type Socket } from 'node:net';
 import nodemailer from 'nodemailer';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type MailTransport, SmtpEmailService } from '../../src/adapters/email/SmtpEmailService.js';
+import { smtpTransportOptions } from '../../src/container.js';
 import type { EmailMessage } from '../../src/domain/email.js';
 import { UpstreamError } from '../../src/errors.js';
 
@@ -34,5 +36,46 @@ describe('SmtpEmailService (§5.8)', () => {
     const transport: MailTransport = { sendMail: () => Promise.reject(new Error('ECONNREFUSED mailpit:1025')) };
 
     await expect(new SmtpEmailService(transport).send(message)).rejects.toBeInstanceOf(UpstreamError);
+  });
+
+  it('wraps a transport timeout in UpstreamError', async () => {
+    const timeout = Object.assign(new Error('Greeting never received'), { code: 'ETIMEDOUT' });
+    const transport: MailTransport = { sendMail: () => Promise.reject(timeout) };
+
+    const failure = await new SmtpEmailService(transport).send(message).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(UpstreamError);
+    expect((failure as UpstreamError).cause).toBe(timeout);
+  });
+
+  describe('against a mail server that accepts the connection but never answers', () => {
+    const sockets = new Set<Socket>();
+    const silentServer = createServer((socket) => {
+      sockets.add(socket); // never write the SMTP greeting
+      socket.on('close', () => sockets.delete(socket));
+    });
+    let port = 0;
+
+    beforeAll(async () => {
+      await new Promise<void>((resolve) => silentServer.listen(0, '127.0.0.1', resolve));
+      port = (silentServer.address() as AddressInfo).port;
+    });
+
+    afterAll(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => silentServer.close(resolve));
+    });
+
+    it('gives up after SMTP_TIMEOUT_MS with UpstreamError instead of hanging (D-010)', async () => {
+      const options = smtpTransportOptions({ host: '127.0.0.1', port, secure: false, timeoutMs: 200 });
+      const transport = nodemailer.createTransport(options);
+      const startedAt = Date.now();
+
+      try {
+        await expect(new SmtpEmailService(transport).send(message)).rejects.toBeInstanceOf(UpstreamError);
+        expect(Date.now() - startedAt).toBeLessThan(2_000);
+      } finally {
+        transport.close();
+      }
+    });
   });
 });

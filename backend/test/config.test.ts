@@ -34,7 +34,7 @@ describe('loadConfig (§5.10)', () => {
         clientMaxAgeSeconds: 86_400,
       },
       featuredProductIds: [1, 5, 9],
-      smtp: { host: 'mailpit', port: 1025, secure: false, user: undefined, pass: undefined },
+      smtp: { host: 'mailpit', port: 1025, secure: false, user: undefined, pass: undefined, timeoutMs: 10_000 },
       mail: { from: 'catalogue@example.com', salesInboxEmail: 'sales@example.com' },
       jsonBodyLimit: '10kb',
     });
@@ -50,13 +50,14 @@ describe('loadConfig (§5.10)', () => {
       SMTP_SECURE: 'true',
       SMTP_USER: 'user',
       SMTP_PASS: 'pass',
+      SMTP_TIMEOUT_MS: '2500',
     });
 
     expect(config.port).toBe(8080);
     expect(config.productApi.staleMaxAgeSeconds).toBe(3600);
     expect(config.productApi.retryBackoffSeconds).toBe(5);
     expect(config.images.hostAllowlist).toEqual(['fakestoreapi.com', 'cdn.example.com']);
-    expect(config.smtp).toMatchObject({ secure: true, user: 'user', pass: 'pass' });
+    expect(config.smtp).toMatchObject({ secure: true, user: 'user', pass: 'pass', timeoutMs: 2500 });
   });
 
   it('accepts an empty featured list and tolerates spaces', () => {
@@ -76,6 +77,7 @@ describe('loadConfig (§5.10)', () => {
     ['zero TTL', { PRODUCT_CACHE_TTL_SECONDS: '0' }, 'PRODUCT_CACHE_TTL_SECONDS'],
     ['non-numeric back-off', { CACHE_RETRY_BACKOFF_SECONDS: 'later' }, 'CACHE_RETRY_BACKOFF_SECONDS'],
     ['invalid boolean', { SMTP_SECURE: 'yes' }, 'SMTP_SECURE'],
+    ['zero SMTP timeout', { SMTP_TIMEOUT_MS: '0' }, 'SMTP_TIMEOUT_MS'],
     ['invalid log level', { LOG_LEVEL: 'loud' }, 'LOG_LEVEL'],
   ])('fails fast on %s, naming the variable', (_label, overrides, variable) => {
     expect(() => loadConfig({ ...required, ...overrides })).toThrow(ConfigError);

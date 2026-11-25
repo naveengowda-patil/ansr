@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import { SmtpEmailService } from './adapters/email/SmtpEmailService.js';
+import { type MailTransport, SmtpEmailService } from './adapters/email/SmtpEmailService.js';
 import {
   type CatalogueSnapshot,
   FakeStoreProductRepository,
@@ -18,8 +18,46 @@ export interface Container {
   close(): void;
 }
 
+/** Options handed to the SMTP transport factory (blueprint §5.8). */
+export interface SmtpTransportOptions {
+  readonly host: string;
+  readonly port: number;
+  readonly secure: boolean;
+  readonly connectionTimeout: number;
+  readonly greetingTimeout: number;
+  readonly socketTimeout: number;
+  readonly auth?: { readonly user: string; readonly pass: string };
+}
+
+export interface ClosableMailTransport extends MailTransport {
+  close(): void;
+}
+
+export type MailTransportFactory = (options: SmtpTransportOptions) => ClosableMailTransport;
+
+export interface ContainerOverrides {
+  /** Defaults to nodemailer.createTransport. Tests pass a spy to check the options. */
+  readonly createMailTransport?: MailTransportFactory;
+}
+
+/**
+ * SMTP transport options from config. Every timeout is SMTP_TIMEOUT_MS, so a hanging
+ * mail server can't stall an enquiry for nodemailer's multi-minute defaults (D-010).
+ */
+export function smtpTransportOptions(smtp: Config['smtp']): SmtpTransportOptions {
+  return {
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    connectionTimeout: smtp.timeoutMs,
+    greetingTimeout: smtp.timeoutMs,
+    socketTimeout: smtp.timeoutMs,
+    ...(smtp.user && smtp.pass ? { auth: { user: smtp.user, pass: smtp.pass } } : {}),
+  };
+}
+
 /** Composition root (blueprint §5.3): the only place that creates adapters. */
-export function createContainer(config: Config): Container {
+export function createContainer(config: Config, overrides: ContainerOverrides = {}): Container {
   const logger = new JsonLogger(config.logLevel, (line) => process.stdout.write(`${line}\n`));
   const now = () => Date.now();
   const cacheTiming = {
@@ -41,12 +79,9 @@ export function createContainer(config: Config): Container {
     logger,
   });
 
-  const transport = nodemailer.createTransport({
-    host: config.smtp.host,
-    port: config.smtp.port,
-    secure: config.smtp.secure,
-    ...(config.smtp.user && config.smtp.pass ? { auth: { user: config.smtp.user, pass: config.smtp.pass } } : {}),
-  });
+  const createMailTransport: MailTransportFactory =
+    overrides.createMailTransport ?? ((options) => nodemailer.createTransport(options));
+  const transport = createMailTransport(smtpTransportOptions(config.smtp));
 
   return {
     deps: {

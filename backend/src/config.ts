@@ -31,6 +31,8 @@ export interface Config {
     readonly secure: boolean;
     readonly user?: string | undefined;
     readonly pass?: string | undefined;
+    /** Connection, greeting and socket timeout. */
+    readonly timeoutMs: number;
   };
   readonly mail: {
     readonly from: string;
@@ -94,6 +96,7 @@ const envSchema = z.object({
   SMTP_SECURE: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   SMTP_USER: optionalString,
   SMTP_PASS: optionalString,
+  SMTP_TIMEOUT_MS: positiveInt(10_000),
 
   MAIL_FROM: z.email(),
   SALES_INBOX_EMAIL: z.email(),
@@ -136,6 +139,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       secure: e.SMTP_SECURE,
       user: e.SMTP_USER,
       pass: e.SMTP_PASS,
+      timeoutMs: e.SMTP_TIMEOUT_MS,
     },
     mail: { from: e.MAIL_FROM, salesInboxEmail: e.SALES_INBOX_EMAIL },
     jsonBodyLimit: e.JSON_BODY_LIMIT,
