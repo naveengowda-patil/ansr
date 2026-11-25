@@ -132,6 +132,7 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - An unknown product returns 404.
   - The email is plain text, goes to `SALES_INBOX_EMAIL` from `MAIL_FROM`, and has `Reply-To` set to the customer.
   - Sending is synchronous. A failure returns 502, and the app shows an error with Retry. There is no queueing.
+  - Sending is bounded by `SMTP_TIMEOUT_MS` (10 s), which sets the connection, greeting and socket timeouts. A hanging mail server therefore gives a 502 within seconds, not after nodemailer's multi-minute defaults.
 - **Why:**
   - This prevents header injection and keeps behaviour predictable.
   - A queue (for example SQS) is the next step if delivery guarantees are needed.
@@ -342,7 +343,7 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 |---|---|---|
 | Fake Store | Postgres or DynamoDB | A new `ProductRepository` adapter, wired in `container.ts` |
 | In-memory search | **Postgres full-text** (no new infra if the store is Postgres), **OpenSearch** (AWS managed, scale and relevance tuning) or **Typesense** (simple, typo tolerant) | A new `ProductSearchEngine` adapter declaring its capabilities |
-| Mailpit | Amazon SES | SMTP config only, using the same `SmtpEmailService` |
+| Mailpit | Amazon SES | SMTP config only, using the same `SmtpEmailService`, with no code change:<br>• `SMTP_HOST=email-smtp.<region>.amazonaws.com` and SES SMTP credentials in `SMTP_USER` / `SMTP_PASS`;<br>• **port 587 with `SMTP_SECURE=false`**, where the connection is upgraded with STARTTLS (SES requires it);<br>• or **port 465 with `SMTP_SECURE=true`**, with TLS from the start. |
 | Docker Compose | ECS Fargate or App Runner | Nothing: the same image and `/health` |
 | `.env` | Secrets Manager or Parameter Store | Nothing: injected as env vars by the task definition |
 | In-memory cache | Redis / ElastiCache | Behind the same repository adapter |

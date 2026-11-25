@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.9, backend implemented |
+| Status | v0.10, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -323,9 +323,17 @@ Swapping engines (e.g. OpenSearch) = a new adapter implementing `ProductSearchEn
 - `Subject`: `Product enquiry: {product title}` — CR/LF stripped from the title (upstream data, defence in depth).
 - Plain text body: product id and title, customer name, customer email, message (or "(no message)"), received timestamp (ISO 8601, UTC). Never HTML.
 - Sending is synchronous; failure → 502 `UPSTREAM_ERROR`. No queueing or retries.
+- **SMTP timeout:** the transport is created with `connectionTimeout`, `greetingTimeout` and `socketTimeout` all set to `SMTP_TIMEOUT_MS` (default 10000).
+  - Without these, nodemailer's defaults apply: 2 min to connect, 30 s for the greeting and 10 min of socket inactivity. A hanging mail server could stall an enquiry for minutes.
+  - A send that hits the timeout fails like any other delivery failure: `UpstreamError` → 502.
+- **Amazon SES** works through its SMTP interface by config alone, with no code change:
+  - `SMTP_HOST=email-smtp.<region>.amazonaws.com`
+  - `SMTP_USER` / `SMTP_PASS` = the SES SMTP credentials
+  - either **port 587 with `SMTP_SECURE=false`**: the connection starts plain and is upgraded with STARTTLS, which nodemailer does automatically when the server offers it, and SES requires it before AUTH;
+  - or **port 465 with `SMTP_SECURE=true`**: TLS from the first byte.
 - Logs record the product id and outcome only, not the customer's name, email or message.
 - `SmtpEmailService` depends on a narrow `MailTransport` interface (`sendMail` only), not on nodemailer types.
-  - The nodemailer transport is created in `container.ts`.
+  - The nodemailer transport is created in `container.ts` from `smtpTransportOptions(config)`, through an injectable factory (default `nodemailer.createTransport`), so tests can check the options it receives.
   - Tests use nodemailer's stream transport (no SMTP server) or a stub transport.
 
 ### 5.9 Errors
@@ -371,7 +379,8 @@ Every variable is one of three kinds:
 | `FEATURED_PRODUCT_IDS` | **Required** | `1,5,9,13,17` | Ordered, comma-separated positive integers. Must be set; may be empty (Home is then filled by rating). |
 | `SMTP_HOST` | **Required** | `mailpit` | `localhost` when running the API outside Docker |
 | `SMTP_PORT` | **Required** | `1025` | |
-| `SMTP_SECURE` | Default | `false` | `true` \| `false` |
+| `SMTP_SECURE` | Default | `false` | `true` \| `false`. `false` for Mailpit and for SES on port 587 (STARTTLS); `true` for SES on port 465 (§5.8) |
+| `SMTP_TIMEOUT_MS` | Default | `10000` | Connection, greeting and socket timeout for the SMTP transport; a hung send → 502 |
 | `SMTP_USER` / `SMTP_PASS` | Optional | empty | Empty = no auth (Mailpit) |
 | `MAIL_FROM` | **Required** | `catalogue@example.com` | Valid email address |
 | `SALES_INBOX_EMAIL` | **Required** | `sales@example.com` | Valid email address |
@@ -462,7 +471,7 @@ Request body (`Content-Type: application/json`, unknown fields rejected):
 
 | Field | Rule |
 |---|---|
-| `productId` | required, positive integer, must exist (else 404 `NOT_FOUND`) |
+| `productId` | required, positive integer **JSON number**, must exist (else 404 `NOT_FOUND`). `"7"` (a string), `7.5`, `0` and `-1` → 400 |
 | `name` | required, trimmed, 1–100 chars, no CR/LF or other control characters |
 | `email` | required, trimmed, valid email address, ≤ 254 chars, no CR/LF |
 | `message` | optional, ≤ 2000 chars (line breaks allowed; it only goes into the body) |
@@ -571,7 +580,7 @@ protocol NetworkClient: Sendable {
 | `productImage(id:)` | `GET /products/{id}/image` |
 | `categories` | `GET /categories` |
 | `category(_:)` | `GET /categories/{category}` (path-encoded) |
-| `createEnquiry(EnquiryRequest)` | `POST /enquiries` |
+| `createEnquiry(EnquiryRequest)` | `POST /enquiries`. `EnquiryRequest.productId` is a Swift `Int`, so it is encoded as a positive integer JSON number (`7`, never `"7"` or `7.5`). The backend returns 400 for anything else (§6.9). |
 
 `ProductQuery` mirrors §6.4 with every field optional (`q`, `category`, `minPrice`, `maxPrice`, `minRating`, `sort`, `page`, `pageSize`). The search screen currently sends `q` only; no sort/filter UI yet.
 
@@ -661,7 +670,7 @@ Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug co
 - JSON logs to stdout → CloudWatch Logs.
 - Graceful shutdown on `SIGTERM` (stop accepting connections, finish in-flight requests).
 - Catalogue warm-up after listening (§5.6), so the first user request after a deploy is normally served from the cache.
-- Email in production: Amazon SES via its SMTP interface works with the existing `SmtpEmailService` by config alone; an SES-API adapter would be a new `EmailService`.
+- Email in production: Amazon SES via its SMTP interface works with the existing `SmtpEmailService` by config alone: port 587 with `SMTP_SECURE=false` (STARTTLS), or port 465 with `SMTP_SECURE=true` (§5.8). An SES-API adapter would be a new `EmailService`.
 
 ### 8.4 README contents
 
@@ -694,9 +703,10 @@ Tests never hit the real network. They test behaviour through public interfaces,
 | Search plug-and-play | Supertest + mock `Logger` | The **default `InMemorySearchEngine` (text search only)**: `category`, `minPrice`, `maxPrice`, `minRating` and each non-relevance sort → 400 naming it, with a warning logged (`param`, `value`, engine name); `q`, `sort=relevance` and paging work. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. With `allCapabilities()`, the real engine serves `category` + sort through the route. |
 | `InMemorySearchEngine` | Unit | default = `textSearchOnly()`; with `allCapabilities()`: each filter and sort (additional, not enabled in the running app), category filter case-insensitive, combined filters; paging and total; relevance = upstream order; searches the latest snapshot after re-indexing |
 | Categories route | Supertest | `/categories/JEWELERY` matches and returns `jewelery` as the data spells it; unknown → 404 |
-| `container.ts` | Unit (no network) | the running app's search engine is `textSearchOnly()`; settings flow from config |
+| `container.ts` | Unit (no network) | the running app's search engine is `textSearchOnly()`; settings flow from config; the SMTP transport receives `connectionTimeout`, `greetingTimeout` and `socketTimeout` = `SMTP_TIMEOUT_MS` |
+| Enquiry route (email) | Supertest | send fails (502): logs contain no customer name, email or message; tab, `\u0000` and `\u007F` in `name` and in `email` → 400; `productId` `7.5`, `0`, `-1` (and `"7"`) → 400 |
 | `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Stale-while-revalidate, catalogue and image:**<br>• an expired copy is returned without waiting for upstream (the upstream response is held back until after the assertion);<br>• exactly one background refresh for concurrent requests;<br>• a successful refresh replaces the copy;<br>• a failed refresh keeps serving the old copy and logs once;<br>• back-off is respected (no refresh inside the window, one after it);<br>• past the 24 h cap the request waits and gets `UpstreamError`;<br>• no copy + failure → `UpstreamError`.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
-| `SmtpEmailService` | nodemailer stream/JSON transport (no SMTP server) | headers (to, from, reply-to), plain text only |
+| `SmtpEmailService` | nodemailer stream transport, a stub transport, and a local socket that never greets | headers (to, from, reply-to), plain text only; a transport rejecting with a timeout error → `UpstreamError`; a real nodemailer transport against a silent local server times out within `SMTP_TIMEOUT_MS` → `UpstreamError` |
 | `TtlCache` | Unit with fake clock + `whenIdle()` | fresh hit; expired copy returned immediately and marked stale while one background refresh runs; refresh success replaces the copy; refresh failure keeps the copy, calls the error callback once and starts the back-off; no refresh inside the window, one after it; past the cap the call waits and rethrows; first load waits; a throwing error callback never causes an unhandled rejection; single-flight; bounded entries (oldest evicted) |
 | `startup.ts` | Real server on port 0 + fake repository | `/health` answers while the warm-up is still pending; a failed warm-up logs `catalogue.warmup_failed` and the server keeps serving; a successful warm-up fills the cache |
 | Routes (cache past cap) | Supertest + real `FakeStoreProductRepository` | catalogue older than 24 h and Fake Store down → `GET /products/featured` is 502 |
@@ -783,3 +793,4 @@ None open.
 | 0.7 | 2026-11-25 | Cache switched to stale-while-revalidate: after the TTL the copy is returned immediately and refreshed in the background (one per key, errors always caught, back-off reused, 24 h cap still waits). `TtlCache.whenIdle()` for tests. Log events renamed to `catalogue.refresh_failed` / `image.refresh_failed`. Startup catalogue warm-up in the new `src/startup.ts`. Tests table updated. |
 | 0.8 | 2026-11-25 | Search review. Category matching is case-insensitive everywhere (`sameCategory`; `/categories/JEWELERY` returns `jewelery`). Capabilities are explicit: `InMemorySearchEngine` defaults to `textSearchOnly()`, which `container.ts` passes explicitly. **The running app does text search only.** The other filters and sorts are labelled "additional, built and unit-tested, not enabled in the running app". §6.4 has a "running app" column. |
 | 0.9 | 2026-11-25 | §12 Future: cursor-based paging added next to Tuist. Docs only. |
+| 0.10 | 2026-11-25 | Enquiry flow review. `SMTP_TIMEOUT_MS` (default 10000) is applied to the connection, greeting and socket timeouts, and a hung send → 502. The transport is built via `smtpTransportOptions(config)` and an injectable factory. Precise SES settings (587 + `SMTP_SECURE=false` with STARTTLS, or 465 + `SMTP_SECURE=true`). `productId` must be a positive integer JSON number (§6.9, §7.5). Tests added for no customer data in failure logs, control characters, productId shapes and the SMTP timeout. |
