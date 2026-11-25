@@ -51,8 +51,10 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - `topRated` holds the 3 highest rated.
   - `rest` holds the remainder in upstream order, with no duplicates. It is empty for a category with 3 or fewer products.
   - An unknown category returns 404.
+  - Category names match **case-insensitively** everywhere: `GET /categories/JEWELERY` works, and so does the category filter when it's enabled. The response always spells the category the way the data does (`jewelery`).
 - **Why:**
   - Two explicit lists let the app render two sections without re-deriving the rule.
+  - Case is not meaningful in a category name. Returning the data's spelling keeps one canonical name for display and links.
   - It is a domain function, not search-engine sorting.
 - **Blueprint:** §2 AC-2, §5.5, §6.8
 
@@ -87,16 +89,28 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - Each engine declares its capabilities. Anything a request uses that the engine doesn't support gets:
     - a 400 `VALIDATION_ERROR` naming it, and
     - a warning in the logs (param, value, engine name) through the injected logger.
-  - `InMemorySearchEngine` supports every filter and sort. Its capabilities are passed in through the constructor, defaulting to everything, so tests can create it with fewer.
+  - **The running app does text search only, by design:** `q`, `relevance` and paging.
+    - `container.ts` creates `new InMemorySearchEngine({ capabilities: textSearchOnly() })`.
+    - With no options, the engine is also text-only, so nothing extra is enabled by default.
+    - Capabilities are always explicit: `textSearchOnly()` or `allCapabilities()`.
+  - **Additional, built and unit-tested, not enabled in the running app:**
+    - the `category`, `minPrice`, `maxPrice` and `minRating` filters;
+    - the `rating_desc`, `price_asc`, `price_desc` and `title_asc` sorts.
+    - They are switched on by passing more capabilities (`allCapabilities()`) or by plugging in a real engine, with no route or contract change.
+  - The full `GET /products` contract and its shape validation stay in place, and paging is always supported.
   - Index sync (resolved OQ-2): before each search, the route hands the cached catalogue to `engine.index()`, which is skipped when the catalogue hasn't changed.
   - On iOS, every `ProductQuery` field is optional and only non-nil fields are sent.
+- **History:** This narrows the earlier choice that the in-memory engine "supports all filters and sorts" by default. After review, the running app was limited to what the acceptance criteria need (AC-3, text search), and capabilities were made explicit, so nothing is enabled by accident.
 - **Why:**
   - A real engine plugs in without touching routes or the app.
+  - Only enabling what AC-3 needs keeps the live surface small and honest. The extra logic is ready, but nobody depends on it yet.
   - Rejecting loudly means clients never get silently wrong results.
   - The warning shows when clients rely on something the current engine can't do.
-- **Proof:** Two tests cover this.
-  - The real in-memory engine with limited capabilities returns 400 and logs the warning.
+- **Proof:**
+  - The default engine returns 400 plus a warning for `category`, `minPrice`, `maxPrice`, `minRating` and every non-relevance sort.
   - A fake engine that supports everything receives the exact parsed query.
+  - The same real engine created with `allCapabilities()` serves the extra filters and sorts.
+- **Known limits:** see "Known limits" below.
 - **Blueprint:** §5.4, §5.5, §5.7, §6.4, §7.5, §9.1
 
 ### D-009 — One error envelope, four codes
@@ -307,11 +321,20 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 
 | Dropped / simplified | Why |
 |---|---|
-| No sort/filter UI on iOS | The API and engine already support it (D-008), so adding it later is app-only work. |
+| Text search only in the running app; no sort/filter UI on iOS | The contract and the extra filter/sort logic are built and unit-tested (D-008). Enabling them is a capability switch on the backend plus app-only UI work. |
 | No rate limiting or spam protection on enquiries | Out of scope for a PoC with no public deployment. Add it at the edge (API Gateway or WAF) or as middleware before going live. |
 | No auth and no admin screen | Featured ids come from config (D-002), so nothing needs an admin UI yet. |
 | No enquiry persistence | The email is the record for now. A table or queue comes when delivery guarantees or reporting are needed. |
 | No infrastructure-as-code | The Docker image, `/health` and env-based config are the AWS-ready parts. CDK or Terraform come with the first real environment. |
+
+## Known limits (search)
+
+| Limit | What it means today | Where it gets fixed |
+|---|---|---|
+| Relevance isn't real relevance yet | `relevance` keeps the upstream order. A product that matches in the title ranks no higher than one that matches in the description. | A real engine ranks by match quality. |
+| No typo tolerance or word splitting | Matching is one case-insensitive phrase, so "rng" or "ring gold" won't find "Gold Ring". | The job of the future engine (Typesense, OpenSearch, Postgres full-text). |
+| Everything is in memory | Fine for 20 products, not for 20,000: each search scans the whole catalogue in the API process. | That's why search sits behind `ProductSearchEngine`: a real engine is one adapter. |
+| Indexing is "keep the latest catalogue" | The route hands the engine the cached catalogue before each search. | A real engine is fed by a sync job when products change, not before each search. |
 
 ## How it grows (now → production)
 
@@ -330,6 +353,10 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 - **Move the iOS project to Tuist.**
   - The project is generated from a Swift manifest, so there are no `.xcodeproj` merge conflicts.
   - It splits into modules: `Core`, `Networking`, `DesignSystem`, `Features`.
+- **Switch search to cursor-based paging.**
+  - Today paging is offset-based (`page`, `pageSize`).
+  - If the catalogue refreshes mid-browse, items can shift between pages, so a user may see one twice or miss one.
+  - A cursor (for example, the last item's sort key and id) keeps pages stable.
 - **Set up environments: Dev, Staging and Prod.**
   - Each gets its own xcconfig (base URL, app name, bundle id).
   - Each gets its own scheme.

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.7, backend implemented |
+| Status | v0.8, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -30,7 +30,7 @@ This is the single source of truth for **what** to build. Every change starts he
 | ID | Criterion | Exact rule |
 |---|---|---|
 | AC-1 | **Home** shows 5 featured "top rated" products the business picked | Ordered list `FEATURED_PRODUCT_IDS` from config. Ids that don't exist are skipped. If fewer than 5 remain, fill up with the highest-rated products not already included (ranking §5.5). Max 5 products. |
-| AC-2 | **Categories**: open a category, see its top rated products first, then the rest | Top rated = the 3 highest-rated products in that category (§5.5). Rest = the remaining products of the category in upstream order. No duplicates. A category with ≤3 products has an empty `rest`. |
+| AC-2 | **Categories**: open a category, see its top rated products first, then the rest | Category names match case-insensitively (§6.8). Top rated = the 3 highest-rated products in that category (§5.5). Rest = the remaining products of the category in upstream order. No duplicates. A category with ≤3 products has an empty `rest`. |
 | AC-3 | **Search**: type a term, tap search, only see matching products | Runs on explicit submit only. Case-insensitive substring match of the trimmed term on title, description **or** category. Filtering happens in the backend. |
 | AC-4 | **Product details**: tap a tile to see details | Detail screen fetches the product by id. |
 | AC-5 | **Enquiry**: tap "Enquire", fill a short form, submit; sales inbox gets an email, customer sees "Thank you" | Fields `productId`, `name`, `email` required, `message` optional. Plain-text email to `SALES_INBOX_EMAIL` with `Reply-To` = customer. On success the sheet shows a thank-you state. |
@@ -231,9 +231,18 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
 - **Featured** — `selectFeatured(all, featuredIds, count = 5)`: walk `featuredIds` in order, keep existing products, drop duplicates; if fewer than `count`, append the highest-rated products not yet included; return at most `count`. The count of 5 is a fixed domain constant, not config.
 - **Category split** — `splitTopRated(productsInCategory, topCount = 3)`: `topRated` = first 3 by `compareByRating`; `rest` = remaining products in their original (upstream) order.
 - **Search match** — `matchesText(product, q)`: `q` already trimmed; case-insensitive substring of the whole phrase in `title`, `description` or `category` (not tokenised).
-- **Search filters** — `matchesFilters(product, query)`: every filter present must hold (AND). `q` via `matchesText`; `category` exact match; `minPrice ≤ price ≤ maxPrice` (inclusive, each bound optional); `rating.rate ≥ minRating`.
-- **Search sorts** — `compareForSort(sort)`: `relevance` = upstream order; `rating_desc` = `compareByRating`; `price_asc` / `price_desc` = by price, ties by `id` asc; `title_asc` = case-insensitive title (`localeCompare`, base sensitivity), ties by `id` asc.
-- **Capability check** — `findUnsupported(query, capabilities)`: returns each filter present in the query, and the sort, that the engine does not support, as `{ param, value }` pairs. Paging is always supported.
+- **Search filters** — `matchesFilters(product, query)`: every filter present must hold (AND).
+  - `q` via `matchesText` (enabled in the running app).
+  - *Additional, built and unit-tested, not enabled in the running app:* `category` (case-insensitive equality), `minPrice ≤ price ≤ maxPrice` (inclusive, each bound optional), `rating.rate ≥ minRating`.
+- **Search sorts** — `compareForSort(sort)`:
+  - `relevance` = upstream order (enabled in the running app).
+  - *Additional, built and unit-tested, not enabled in the running app:* `rating_desc` = `compareByRating`; `price_asc` / `price_desc` = by price, ties by `id` asc; `title_asc` = case-insensitive title (`localeCompare`, base sensitivity), ties by `id` asc.
+- **Category match** — `sameCategory(a, b)`: case-insensitive equality, used by the category filter and by `GET /categories/{category}` (§6.8).
+- **Capabilities** — two named sets, so an engine's capabilities are always explicit:
+  - `textSearchOnly()`: filter `q`, sort `relevance`. This is what the running app uses.
+  - `allCapabilities()`: every filter and sort.
+  - Paging is always supported and isn't listed.
+- **Capability check** — `findUnsupported(query, capabilities)`: returns each filter present in the query, and the sort, that the engine doesn't support, as `{ param, value }` pairs.
 - **Enquiry email** — `buildEnquiryEmail(product, enquiry, settings) → EmailMessage` (§5.8).
 
 ### 5.6 Fake Store adapter (`FakeStoreProductRepository`)
@@ -295,8 +304,12 @@ Two responsibilities, two ports:
 6. Respond `{ items, total, page, pageSize }`.
 
 **`InMemorySearchEngine`:**
-- Constructor: `new InMemorySearchEngine({ name = 'in-memory', capabilities = allCapabilities() })`. The container uses the defaults, so every filter and sort is supported. Tests can pass fewer capabilities to exercise the 400 path with the real engine.
-- Applies `matchesFilters` and `compareForSort` (§5.5), then pages. An unknown category used as a filter gives an empty result, not a 404.
+- Constructor: `new InMemorySearchEngine({ name = 'in-memory', capabilities = textSearchOnly() })`.
+  - With no options, it does **text search only**. Nothing extra is enabled by default.
+  - `container.ts` still passes `{ capabilities: textSearchOnly() }` explicitly, so what the running app supports is visible at the composition root.
+- **The running app does text search only** (D-008): `q`, `relevance` and paging. Any other filter or sort gets a 400 `VALIDATION_ERROR` plus a `search.unsupported` warning.
+- *Additional, built and unit-tested, not enabled in the running app:* the `category`, `minPrice`, `maxPrice` and `minRating` filters and the `rating_desc`, `price_asc`, `price_desc` and `title_asc` sorts. They switch on by creating the engine with `allCapabilities()`, or by plugging in a real engine that declares them. No route or contract change is needed.
+- The engine applies `matchesFilters` and `compareForSort` (§5.5), then pages. If enabled, an unknown category used as a filter gives an empty result, not a 404.
 
 Category "top rated" stays a domain function (`splitTopRated`), not engine sorting.
 
@@ -397,21 +410,23 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 
 ### 6.4 `GET /products` (AC-3, search and listing)
 
-| Param | Shape | Meaning (§5.5) |
-|---|---|---|
-| `q` | string, trimmed, 1–100 chars; present-but-blank → 400 | case-insensitive match on title, description or category |
-| `category` | string, 1–100 chars | exact category |
-| `minPrice`, `maxPrice` | number ≥ 0; `minPrice ≤ maxPrice` | inclusive price bounds |
-| `minRating` | number 0–5 | `rating.rate ≥ minRating` |
-| `sort` | `relevance` \| `rating_desc` \| `price_asc` \| `price_desc` \| `title_asc` (default `relevance`) | result order |
-| `page` | integer ≥ 1 (default 1) | |
-| `pageSize` | integer 1–50 (default 20) | |
+| Param | Shape | Meaning (§5.5) | Running app |
+|---|---|---|---|
+| `q` | string, trimmed, 1–100 chars; present-but-blank → 400 | case-insensitive match on title, description or category | ✅ enabled |
+| `category` | string, 1–100 chars | category, case-insensitive | additional: 400 |
+| `minPrice`, `maxPrice` | number ≥ 0; `minPrice ≤ maxPrice` | inclusive price bounds | additional: 400 |
+| `minRating` | number 0–5 | `rating.rate ≥ minRating` | additional: 400 |
+| `sort` | `relevance` \| `rating_desc` \| `price_asc` \| `price_desc` \| `title_asc` (default `relevance`) | result order | `relevance` ✅; others additional: 400 |
+| `page` | integer ≥ 1 (default 1) | | ✅ always |
+| `pageSize` | integer 1–50 (default 20) | | ✅ always |
+
+"Additional" means built and unit-tested, but not enabled in the running app (§5.7, D-008). The full contract and its shape validation stay in place, so enabling a capability needs no API change.
 
 - **Absent vs empty:**
   - An absent param is not applied (filters) or gets its default (`sort`, `page`, `pageSize`).
   - A param that is **present but empty** returns 400 `VALIDATION_ERROR`. That includes whitespace-only for `q` and `category`, e.g. `?category=`, `?minPrice=`, `?sort=` or `?page=`. An empty value is never treated as "not set".
 - Unknown params or repeated params → 400 `VALIDATION_ERROR`.
-- Shape is validated first, then engine support (§5.7). The default `InMemorySearchEngine` supports every filter and sort. An engine configured with fewer capabilities rejects the others with 400 and logs a warning.
+- Shape is validated first, then engine support (§5.7). The running app's engine supports `q`, `relevance` and paging. Every other filter or sort → 400 `VALIDATION_ERROR` naming it (e.g. `Filter 'category' is not supported yet.`) plus a `search.unsupported` warning.
 - No params → all products, paged.
 
 `200 { "items": Product[], "total": number, "page": number, "pageSize": number }`
@@ -438,8 +453,8 @@ Errors:
 
 ### 6.8 `GET /categories/{category}` (AC-2)
 
-`category` is URL-encoded by the client (e.g. `men's%20clothing`).
-`200 { "category": string, "topRated": Product[], "rest": Product[] }` — rule §5.5. Unknown category → 404.
+`category` is URL-encoded by the client (e.g. `men's%20clothing`). It matches **case-insensitively**: `/categories/JEWELERY` works.
+`200 { "category": string, "topRated": Product[], "rest": Product[] }` — rule §5.5. `category` in the response is the name **as the data spells it** (`jewelery`), not as requested. Unknown category → 404.
 
 ### 6.9 `POST /enquiries` (AC-5)
 
@@ -676,8 +691,9 @@ Tests never hit the real network. They test behaviour through public interfaces,
 |---|---|---|
 | Domain | Unit tests on pure functions | ranking tie-break; `selectFeatured` (order kept, missing skipped, duplicates dropped, fill to 5, never >5, catalogue <5); `splitTopRated` (top 3, rest in upstream order, no duplicates, ≤3 products); `matchesText` (case-insensitive, title, description or category, phrase); `matchesFilters` (each filter, inclusive bounds, AND); `compareForSort` (each sort, tie-breaks); `findUnsupported`; `buildEnquiryEmail` (plain text, reply-to, subject CR/LF stripped) |
 | Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
-| Search plug-and-play | Supertest + mock `Logger` | The **real `InMemorySearchEngine` created with limited capabilities**: an unsupported filter and an unsupported sort each → 400 naming them, and a warning is logged with `param`, `value` and the engine name. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. |
-| `InMemorySearchEngine` | Unit | each filter and sort; combined filters; paging and total; relevance = upstream order; default capabilities = everything; re-index skipped for the same snapshot |
+| Search plug-and-play | Supertest + mock `Logger` | The **default `InMemorySearchEngine` (text search only)**: `category`, `minPrice`, `maxPrice`, `minRating` and each non-relevance sort → 400 naming it, with a warning logged (`param`, `value`, engine name); `q`, `sort=relevance` and paging work. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. With `allCapabilities()`, the real engine serves `category` + sort through the route. |
+| `InMemorySearchEngine` | Unit | default = `textSearchOnly()`; with `allCapabilities()`: each filter and sort (additional, not enabled in the running app), category filter case-insensitive, combined filters; paging and total; relevance = upstream order; searches the latest snapshot after re-indexing |
+| Categories route | Supertest | `/categories/JEWELERY` matches and returns `jewelery` as the data spells it; unknown → 404 |
 | `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Stale-while-revalidate, catalogue and image:**<br>• an expired copy is returned without waiting for upstream (the upstream response is held back until after the assertion);<br>• exactly one background refresh for concurrent requests;<br>• a successful refresh replaces the copy;<br>• a failed refresh keeps serving the old copy and logs once;<br>• back-off is respected (no refresh inside the window, one after it);<br>• past the 24 h cap the request waits and gets `UpstreamError`;<br>• no copy + failure → `UpstreamError`.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
 | `SmtpEmailService` | nodemailer stream/JSON transport (no SMTP server) | headers (to, from, reply-to), plain text only |
 | `TtlCache` | Unit with fake clock + `whenIdle()` | fresh hit; expired copy returned immediately and marked stale while one background refresh runs; refresh success replaces the copy; refresh failure keeps the copy, calls the error callback once and starts the back-off; no refresh inside the window, one after it; past the cap the call waits and rethrows; first load waits; a throwing error callback never causes an unhandled rejection; single-flight; bounded entries (oldest evicted) |
@@ -763,3 +779,4 @@ None open.
 | 0.5 | 2026-11-25 | Drift fixes found in review (text only): `Logger` includes `debug`; the repository receives two `TtlCache` instances rather than a clock and limits; `SmtpEmailService` depends on a narrow `MailTransport`; test helpers live in `test/support/` and the only fixture is `products.json`; §5.10 marks each variable as required, default or optional. |
 | 0.6 | 2026-11-25 | Review changes: retry back-off after a failed refresh (`CACHE_RETRY_BACKOFF_SECONDS`, default 30); images limited to JPEG, PNG, WebP and GIF (SVG rejected); all-or-nothing catalogue validation documented (D-028); `GET /products` absent vs present-but-empty params (§6.4); iOS `Endpoints` never sends empty values, and search is disabled while the trimmed text is empty (§7.5, §7.8). |
 | 0.7 | 2026-11-25 | Cache switched to stale-while-revalidate: after the TTL the copy is returned immediately and refreshed in the background (one per key, errors always caught, back-off reused, 24 h cap still waits). `TtlCache.whenIdle()` for tests. Log events renamed to `catalogue.refresh_failed` / `image.refresh_failed`. Startup catalogue warm-up in the new `src/startup.ts`. Tests table updated. |
+| 0.8 | 2026-11-25 | Search review. Category matching is case-insensitive everywhere (`sameCategory`; `/categories/JEWELERY` returns `jewelery`). Capabilities are explicit: `InMemorySearchEngine` defaults to `textSearchOnly()`, which `container.ts` passes explicitly. **The running app does text search only.** The other filters and sorts are labelled "additional, built and unit-tested, not enabled in the running app". §6.4 has a "running app" column. |
