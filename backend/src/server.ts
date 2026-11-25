@@ -1,16 +1,20 @@
 import { createApp } from './app.js';
 import { type Config, loadConfig } from './config.js';
 import { createContainer } from './container.js';
+import { startServer } from './startup.js';
 
-/** Startup only (blueprint §5.3): config → container → app → listen, plus graceful shutdown. */
+/** Entry point (blueprint §5.3): config → container → app → startServer, plus graceful shutdown. */
 
 const SHUTDOWN_GRACE_MS = 10_000;
 
-function start(config: Config): void {
+async function start(config: Config): Promise<void> {
   const container = createContainer(config);
-  const { logger } = container.deps;
-  const server = createApp(container.deps).listen(config.port, () => {
-    logger.info('server.started', { port: config.port });
+  const { logger, productRepository } = container.deps;
+  const { server } = await startServer({
+    app: createApp(container.deps),
+    port: config.port,
+    productRepository,
+    logger,
   });
 
   const shutdown = (signal: NodeJS.Signals) => {
@@ -29,11 +33,17 @@ function start(config: Config): void {
   process.once('SIGINT', shutdown);
 }
 
-try {
-  start(loadConfig());
-} catch (error) {
-  // The logger isn't available until config is valid, so report directly.
+function reportStartFailure(error: unknown): never {
+  // The logger may not exist yet (invalid config), so report directly.
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${JSON.stringify({ time: new Date().toISOString(), level: 'error', msg: 'server.start_failed', message })}\n`);
+  process.stderr.write(
+    `${JSON.stringify({ time: new Date().toISOString(), level: 'error', msg: 'server.start_failed', message })}\n`,
+  );
   process.exit(1);
+}
+
+try {
+  start(loadConfig()).catch(reportStartFailure);
+} catch (error) {
+  reportStartFailure(error);
 }
