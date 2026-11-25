@@ -7,6 +7,13 @@ import { createTestApp } from '../support/testApp.js';
 const catalogue = [buildProduct({ id: 7, title: 'Silver Ring' })];
 const valid = { productId: 7, name: 'Jane Doe', email: 'jane@example.test', message: 'Is it in stock?' };
 
+/** Serialises log entries the way JsonLogger would, including error messages and causes. */
+function serializeLogs(entries: readonly unknown[]): string {
+  return JSON.stringify(entries, (_key, value: unknown) =>
+    value instanceof Error ? { name: value.name, message: value.message, stack: value.stack, cause: value.cause } : value,
+  );
+}
+
 function setup() {
   return createTestApp({ products: catalogue });
 }
@@ -62,6 +69,17 @@ describe('POST /enquiries (AC-5, §6.9, D-010)', () => {
     ['CR/LF in name', { ...valid, name: 'Jane\r\nBcc: attacker@example.test' }],
     ['trailing LF in name', { ...valid, name: 'Jane\n' }],
     ['CR/LF in email', { ...valid, email: 'jane@example.test\r\nBcc: attacker@example.test' }],
+    // Control characters other than CR/LF (§6.9). The rule already blocks them; these prove it.
+    ['a tab in name', { ...valid, name: 'Jane\tDoe' }],
+    ['\\u0000 in name', { ...valid, name: 'Jane\u0000Doe' }],
+    ['\\u007F in name', { ...valid, name: 'Jane\u007FDoe' }],
+    ['a tab in email', { ...valid, email: 'jane\t@example.test' }],
+    ['\\u0000 in email', { ...valid, email: 'jane@example.test\u0000' }],
+    ['\\u007F in email', { ...valid, email: 'jane\u007F@example.test' }],
+    // productId must be a positive integer JSON number (§6.9, §7.5).
+    ['productId 7.5', { ...valid, productId: 7.5 }],
+    ['productId 0', { ...valid, productId: 0 }],
+    ['productId -1', { ...valid, productId: -1 }],
   ])('rejects %s with 400 and sends nothing', async (_label, body) => {
     const { app, emailService } = setup();
     const response = await request(app).post('/enquiries').send(body);
@@ -93,6 +111,23 @@ describe('POST /enquiries (AC-5, §6.9, D-010)', () => {
     expect(response.status).toBe(404);
     expect(response.body).toEqual({ error: { code: 'NOT_FOUND', message: 'Product not found.' } });
     expect(emailService.sent).toEqual([]);
+  });
+
+  it('keeps customer data out of the logs when sending fails (502)', async () => {
+    const { app, emailService, logger } = setup();
+    emailService.failure = new UpstreamError('Email delivery failed', {
+      cause: Object.assign(new Error('Greeting never received'), { code: 'ETIMEDOUT' }),
+    });
+    const enquiry = { productId: 7, name: 'Zelda Quixote', email: 'zelda.q@example.test', message: 'Secret note 4821' };
+
+    const response = await request(app).post('/enquiries').send(enquiry);
+
+    expect(response.status).toBe(502);
+    expect(logger.withMessage('request.failed')).toHaveLength(1);
+    const logged = serializeLogs(logger.entries);
+    for (const customerValue of [enquiry.name, enquiry.email, enquiry.message, 'Zelda', 'zelda.q']) {
+      expect(logged).not.toContain(customerValue);
+    }
   });
 
   it('returns 502 without provider details when sending fails', async () => {
