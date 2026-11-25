@@ -17,7 +17,7 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - The upstream host must be in `IMAGE_HOST_ALLOWLIST` (default `fakestoreapi.com`).
   - Redirects are not followed.
   - Requests time out after `IMAGE_TIMEOUT_MS`.
-  - Only `image/*` responses are passed through, up to `IMAGE_MAX_BYTES`.
+  - Only `image/jpeg`, `image/png`, `image/webp` and `image/gif` are passed through, up to `IMAGE_MAX_BYTES`. SVG is rejected because it can carry scripts, and the app can't render it anyway.
   - Responses carry `Cache-Control` and `X-Content-Type-Options: nosniff`.
   - Each guard has its own test.
 - **Why:**
@@ -129,20 +129,34 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - The whole catalogue is cached in memory for `PRODUCT_CACHE_TTL_SECONDS` (default 300).
   - After the TTL expires, the backend refetches. If Fake Store fails, it serves the last good copy and logs a warning, as long as that copy is at most 24 hours old (`PRODUCT_STALE_MAX_AGE_SECONDS`).
   - It returns 502 when there is no copy, or the copy is older than the cap.
+  - **Retry back-off:** after a failed refresh, requests get the stale copy immediately, without calling upstream, for `CACHE_RETRY_BACKOFF_SECONDS` (default 30). The next request after that retries. This applies to the catalogue and to each image.
   - Concurrent refetches share one request.
 - **Why:**
   - The catalogue is small (about 20 items), so one snapshot serves every read endpoint.
   - The stale fallback keeps the app working through short upstream outages, and Fake Store is a free public API that does go down.
+  - Without the back-off, every request during an outage would wait for the full 5-second timeout before getting the stale copy. With it, at most one request per 30 seconds pays that cost, and the upstream isn't hammered while it recovers.
 - **Trade-offs:**
   - During an outage the app can show data up to 24 hours old. Each time it does, a warning is logged. After 24 hours, a clear error is better than data that may be wrong (for example, old prices).
   - Each instance has its own cache. Redis or ElastiCache can replace it later behind the same adapter.
+  - Recovery is noticed up to 30 seconds late. The warning is logged once per failed attempt, not once per request served during the window.
+  - With no copy to serve there is no back-off, so each request still tries upstream. Failures are never cached.
 - **Tests:**
   - Fresh copy is served without an upstream call.
   - Expired copy with a successful refetch.
   - Expired copy with a failed refetch serves the stale copy.
   - A copy older than 24 hours with a failed refetch returns 502.
   - No copy and a failed fetch returns 502.
+  - Within the back-off window there is no upstream call and the stale copy is served; after the window it retries.
 - **Blueprint:** §5.6, §9.1
+
+### D-028 — One malformed upstream product rejects the whole catalogue
+- **Decision:** The Fake Store response is validated as a whole. If any product fails the schema (a missing field, a wrong type, a rating out of range), the whole response is rejected as `UpstreamError`. The API then serves the stale copy (D-011) or returns 502.
+- **Why:**
+  - We never serve partly valid data.
+  - Dropping only the bad items would quietly change featured selection, category top-3 and search results, and nobody would notice.
+  - Rejecting the whole response is loud: a warning, or a 502 that shows up in logs.
+- **Trade-off:** One bad record can take the catalogue down once the stale copy runs out. With a real database, per-record validation at import time is the better place for this.
+- **Blueprint:** §5.6
 
 ### D-012 — Product detail fetches by id
 - **Decision:** The detail screen calls `GET /products/{id}` instead of receiving the model.

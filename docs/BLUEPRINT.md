@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.5, backend implemented |
+| Status | v0.6, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -240,7 +240,7 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
 - Receives through its constructor:
   - `fetch`, `baseUrl` and `timeoutMs`
   - `imageHostAllowlist`, `imageTimeoutMs` and `imageMaxBytes`
-  - two `TtlCache` instances, `catalogueCache` and `imageCache`, created in `container.ts`, which owns the TTL, stale cap, size bound and clock
+  - two `TtlCache` instances, `catalogueCache` and `imageCache`, created in `container.ts`, which owns the TTL, stale cap, retry back-off, size bound and clock
   - a `Logger`
 - **One upstream call for data:** `GET {baseUrl}/products` loads the whole catalogue (≈20 items). `getById`, `getByIds` and `listCategories` are derived from that cached snapshot (categories = distinct values in first-seen order).
 - **Timeout:** every catalogue request uses `AbortSignal.timeout(PRODUCT_API_TIMEOUT_MS)` (images have their own, below).
@@ -248,16 +248,18 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
   - Within `PRODUCT_CACHE_TTL_SECONDS`: served from the cache, with no upstream call.
   - After the TTL: refetch. On success, the copy and its timestamp are replaced.
   - If the refetch fails and a last good copy exists that is at most `PRODUCT_STALE_MAX_AGE_SECONDS` old (default 86400 = 24 h): serve the stale copy and log a warning (`catalogue.stale_served`, with the copy's age and the failure reason).
-  - If the refetch fails and there is no copy, or the copy is older than that cap: `UpstreamError` (502).
-  - Concurrent refetches share one in-flight request (single-flight). Failures are never cached.
+  - **Retry back-off:** after such a failed refresh, requests for the next `CACHE_RETRY_BACKOFF_SECONDS` (default 30) get the stale copy at once, with no upstream call. Requests no longer each wait for the timeout during an outage. The first request after the window retries. The warning is logged once per failed attempt, not once per request served during the window.
+  - If the refetch fails and there is no copy, or the copy is older than that cap: `UpstreamError` (502). With nothing to serve there is no back-off, so the next request retries.
+  - Concurrent refetches share one in-flight request (single-flight). Failures are never cached; only the retry time is remembered.
   - The caches are `TtlCache` instances created in `container.ts` and injected into the adapter.
 - **Validation:** upstream JSON is parsed with a zod schema. Timeout, network error, non-2xx or schema mismatch → `UpstreamError` (details logged, never returned to the client).
+  - All or nothing (D-028): one malformed product rejects the whole response. The result is then the stale copy or a 502, never a partly valid catalogue.
 - **Mapping:** Fake Store `{ id, title, price, description, category, image, rating }` → `Product` with `currency: "USD"`. The upstream `image` URL is kept internal to the adapter and never exposed by the API.
 - **Images** (D-001): `getImage(id)` looks up the product's internal image URL, then applies these guards. Each failure → `UpstreamError`, with details logged.
   1. **Host allowlist:** the scheme is `http`/`https` and the host is exactly one of `IMAGE_HOST_ALLOWLIST`. Otherwise no request is made.
   2. **No redirects:** fetched with `redirect: 'error'`, so a redirect can't lead outside the allowlist.
   3. **Timeout:** `AbortSignal.timeout(IMAGE_TIMEOUT_MS)`.
-  4. **Content type:** only `image/*` responses are passed through.
+  4. **Content type:** only `image/jpeg`, `image/png`, `image/webp` and `image/gif` pass through. Parameters are ignored and case doesn't matter. Anything else is rejected, including `image/svg+xml` (SVG can carry scripts). The response uses the normalised type, e.g. `image/png`.
   5. **Max size:** rejected if `Content-Length` exceeds `IMAGE_MAX_BYTES`. Reading the body also stops once it passes the limit, which covers a missing or wrong `Content-Length`.
   - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`, least recently used evicted) with the same TTL and stale fallback as the catalogue. A stale image is logged as `image.stale_served`.
   - The route sets cache headers on the response (§6.6).
@@ -335,6 +337,7 @@ Every variable is one of three kinds:
 | `PRODUCT_API_TIMEOUT_MS` | Default | `5000` | Per catalogue request |
 | `PRODUCT_CACHE_TTL_SECONDS` | Default | `300` | Catalogue snapshot + image cache TTL; stale copy served if refetch fails |
 | `PRODUCT_STALE_MAX_AGE_SECONDS` | Default | `86400` | Oldest copy (catalogue or image) that may be served when a refetch fails |
+| `CACHE_RETRY_BACKOFF_SECONDS` | Default | `30` | After a failed refresh, serve the stale copy without retrying upstream for this long (catalogue and images) |
 | `IMAGE_HOST_ALLOWLIST` | **Required** | `fakestoreapi.com` | Comma-separated hostnames, exact match; at least one |
 | `IMAGE_TIMEOUT_MS` | Default | `5000` | Per image request |
 | `IMAGE_CACHE_MAX_ENTRIES` | Default | `100` | Bounded image cache |
@@ -392,6 +395,9 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 | `page` | integer ≥ 1 (default 1) | |
 | `pageSize` | integer 1–50 (default 20) | |
 
+- **Absent vs empty:**
+  - An absent param is not applied (filters) or gets its default (`sort`, `page`, `pageSize`).
+  - A param that is **present but empty** returns 400 `VALIDATION_ERROR`. That includes whitespace-only for `q` and `category`, e.g. `?category=`, `?minPrice=`, `?sort=` or `?page=`. An empty value is never treated as "not set".
 - Unknown params or repeated params → 400 `VALIDATION_ERROR`.
 - Shape is validated first, then engine support (§5.7). The default `InMemorySearchEngine` supports every filter and sort. An engine configured with fewer capabilities rejects the others with 400 and logs a warning.
 - No params → all products, paged.
@@ -405,14 +411,14 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 ### 6.6 `GET /products/{id}/image`
 
 `200` with the image bytes and these headers:
-- `Content-Type`: the upstream `image/*` type
+- `Content-Type`: one of `image/jpeg`, `image/png`, `image/webp`, `image/gif`
 - `Cache-Control: public, max-age={IMAGE_CLIENT_MAX_AGE_SECONDS}`
 - `X-Content-Type-Options: nosniff`
 
 Errors:
 - Invalid id → 400.
 - Unknown product → 404.
-- Any image guard failing (host not allowlisted, redirect, timeout, not `image/*`, too large) or another upstream failure, with no cached copy → 502.
+- Any image guard failing (host not allowlisted, redirect, timeout, disallowed type such as SVG, too large) or another upstream failure, with no cached copy → 502.
 
 ### 6.7 `GET /categories`
 
@@ -542,6 +548,8 @@ protocol NetworkClient: Sendable {
 
 `ProductQuery` mirrors §6.4 with every field optional (`q`, `category`, `minPrice`, `maxPrice`, `minRating`, `sort`, `page`, `pageSize`). The search screen currently sends `q` only; no sort/filter UI yet.
 
+**Endpoints never sends empty values.** A `nil` field is omitted, and so is a string that is empty after trimming. The backend rejects present-but-empty params with 400 (§6.4), so the app must never produce `?q=` or `?category=`.
+
 `APIError` (typed, `Equatable`):
 
 | Case | From |
@@ -574,9 +582,13 @@ ViewModels turn `APIError` into user-facing text through one pure function in `S
 
 | Screen | Data | States | Intents |
 |---|---|---|---|
-| **Home** (root) | `featured` + `categories` loaded concurrently → `ViewState<HomeContent>` | loading / loaded / empty (no featured and no categories) / error+retry | tap tile → `showProduct`; tap category → `showCategory`; `.searchable` + `.onSubmit(of: .search)` → `showSearchResults` if the trimmed term is non-empty |
+| **Home** (root) | `featured` + `categories` loaded concurrently → `ViewState<HomeContent>` | loading / loaded / empty (no featured and no categories) / error+retry | tap tile → `showProduct`; tap category → `showCategory`; `.searchable` + `.onSubmit(of: .search)` → `showSearchResults`. Search stays disabled while the trimmed text is empty (see below). |
 | **Category** | `category(_:)` → `ViewState<CategoryProducts>` | sections "Top rated" and "More in {category}" (second hidden when empty); empty; error+retry | tap tile → `showProduct` |
-| **Search results** | `products(ProductQuery(q:))` → `ViewState<ProductPage>` | loaded list; empty = "No products match '{q}'"; error+retry | `.searchable` prefilled with the query; resubmitting reloads in place; blank submit does nothing; tap tile → `showProduct` |
+| **Search results** | `products(ProductQuery(q:))` → `ViewState<ProductPage>` | loaded list; empty = "No products match '{q}'"; error+retry | `.searchable` prefilled with the query; resubmitting reloads in place; search disabled while the trimmed text is empty; tap tile → `showProduct` |
+
+**Search stays disabled while the trimmed text is empty.**
+- The keyboard's Search key is disabled while the field is empty, which is the system default for `.searchable`.
+- The ViewModel's `canSearch` is `false` for whitespace-only text, so submitting does nothing and no request is sent.
 | **Product detail** | `product(id:)` → `ViewState<Product>` | loaded; **empty = 404 "This product is no longer available"**; error+retry | "Enquire" → `showEnquiry` |
 | **Enquiry** (sheet) | `createEnquiry` | form state: `editing` → `submitting` → `submitted` (thank-you) or `failed(message)` | client-side validation mirrors §6.9 (submit disabled until valid); submit; on thank-you "Done" → `dismissSheet` |
 
@@ -650,12 +662,12 @@ Tests never hit the real network. They test behaviour through public interfaces,
 | Area | How | Must cover |
 |---|---|---|
 | Domain | Unit tests on pure functions | ranking tie-break; `selectFeatured` (order kept, missing skipped, duplicates dropped, fill to 5, never >5, catalogue <5); `splitTopRated` (top 3, rest in upstream order, no duplicates, ≤3 products); `matchesText` (case-insensitive, title, description or category, phrase); `matchesFilters` (each filter, inclusive bounds, AND); `compareForSort` (each sort, tie-breaks); `findUnsupported`; `buildEnquiryEmail` (plain text, reply-to, subject CR/LF stripped) |
-| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
+| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
 | Search plug-and-play | Supertest + mock `Logger` | The **real `InMemorySearchEngine` created with limited capabilities**: an unsupported filter and an unsupported sort each → 400 naming them, and a warning is logged with `param`, `value` and the engine name. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. |
 | `InMemorySearchEngine` | Unit | each filter and sort; combined filters; paging and total; relevance = upstream order; default capabilities = everything; re-index skipped for the same snapshot |
-| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Cache:** fresh (no upstream call); expired + refetch OK (new copy); expired + refetch fails (stale copy served, warning logged); stale copy older than the 24 h cap + failure (`UpstreamError`); no copy + failure (`UpstreamError` → 502).<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; non-`image/*` rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
+| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Cache:** fresh (no upstream call); expired + refetch OK (new copy); expired + refetch fails (stale copy served, warning logged); stale copy older than the 24 h cap + failure (`UpstreamError`); no copy + failure (`UpstreamError` → 502).<br>**Retry back-off, catalogue and image:** within the window there is no upstream call and the stale copy is served; after the window it retries.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
 | `SmtpEmailService` | nodemailer stream/JSON transport (no SMTP server) | headers (to, from, reply-to), plain text only |
-| `TtlCache` | Unit with fake clock | fresh hit; refetch after TTL; stale served within the cap, not beyond it; failures not cached; single-flight; bounded entries (oldest evicted) |
+| `TtlCache` | Unit with fake clock | fresh hit; refetch after TTL; stale served within the cap, not beyond it; retry back-off (no loader call inside the window, retry after it); failures not cached; single-flight; bounded entries (oldest evicted) |
 | `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing |
 
 ### 9.2 iOS (Swift Testing)
@@ -734,3 +746,4 @@ None open.
 | 0.3 | 2026-11-25 | Stale copies served for at most 24 h (`PRODUCT_STALE_MAX_AGE_SECONDS`). `errors.ts` moved to `src/` because adapters throw these errors too. Caches are created in the container and injected. `TtlCache` tests listed. Docker-only backend test command. |
 | 0.4 | 2026-11-25 | Backend implementation sync. The structure gains `domain/email.ts` and `http/params.ts`. The engine's default capabilities come from `allCapabilities()`, a function, so no shared mutable set exists. Stale images are logged as `image.stale_served`. |
 | 0.5 | 2026-11-25 | Drift fixes found in review (text only): `Logger` includes `debug`; the repository receives two `TtlCache` instances rather than a clock and limits; `SmtpEmailService` depends on a narrow `MailTransport`; test helpers live in `test/support/` and the only fixture is `products.json`; §5.10 marks each variable as required, default or optional. |
+| 0.6 | 2026-11-25 | Review changes: retry back-off after a failed refresh (`CACHE_RETRY_BACKOFF_SECONDS`, default 30); images limited to JPEG, PNG, WebP and GIF (SVG rejected); all-or-nothing catalogue validation documented (D-028); `GET /products` absent vs present-but-empty params (§6.4); iOS `Endpoints` never sends empty values, and search is disabled while the trimmed text is empty (§7.5, §7.8). |
