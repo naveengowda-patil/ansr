@@ -44,6 +44,8 @@ export function createFakeStoreRepository(options: FakeStoreOptions = {}) {
     url.pathname === '/products' ? products(url, init) : image(url, init),
   );
   const cacheTiming = { ttlMs: TTL_MS, maxStaleAgeMs: MAX_STALE_MS, retryBackoffMs: BACKOFF_MS, now };
+  const catalogueCache = new TtlCache<'catalogue', CatalogueSnapshot>({ ...cacheTiming, maxEntries: 1 });
+  const imageCache = new TtlCache<number, ProductImage>({ ...cacheTiming, maxEntries: 10 });
 
   const repository = new FakeStoreProductRepository({
     fetch,
@@ -52,8 +54,8 @@ export function createFakeStoreRepository(options: FakeStoreOptions = {}) {
     imageHostAllowlist: options.imageHostAllowlist ?? ['fakestoreapi.com'],
     imageTimeoutMs: options.timeoutMs ?? 1_000,
     imageMaxBytes: options.imageMaxBytes ?? 1_024,
-    catalogueCache: new TtlCache<'catalogue', CatalogueSnapshot>({ ...cacheTiming, maxEntries: 1 }),
-    imageCache: new TtlCache<number, ProductImage>({ ...cacheTiming, maxEntries: 10 }),
+    catalogueCache,
+    imageCache,
     logger,
   });
 
@@ -61,6 +63,10 @@ export function createFakeStoreRepository(options: FakeStoreOptions = {}) {
     repository,
     fetch,
     logger,
+    /** Resolves when all background refreshes (catalogue and images) have settled. */
+    settle: async () => {
+      await Promise.all([catalogueCache.whenIdle(), imageCache.whenIdle()]);
+    },
     advance: (ms: number) => {
       time += ms;
     },
@@ -74,6 +80,23 @@ export const neverResolvesUntilAborted: Route = (_url, init) =>
   new Promise((_resolve, reject) => {
     init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
   });
+
+export interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+}
+
+/** A promise the test settles by hand, to hold an upstream response back. */
+export function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => {};
+  let reject: (reason: unknown) => void = () => {};
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 export function imageResponse(contentType: string, body: Uint8Array | string = PNG_BYTES): Response {
   return new Response(body, { headers: { 'content-type': contentType } });

@@ -1,6 +1,6 @@
 import type { Product } from '../../domain/product.js';
 import { UpstreamError } from '../../errors.js';
-import type { CacheResult, TtlCache } from '../../lib/TtlCache.js';
+import type { BackgroundErrorHandler, TtlCache } from '../../lib/TtlCache.js';
 import type { Logger } from '../../ports/Logger.js';
 import type { ProductImage, ProductRepository } from '../../ports/ProductRepository.js';
 import { type FakeStoreProduct, fakeStoreProductsSchema } from './schema.js';
@@ -61,25 +61,32 @@ export class FakeStoreProductRepository implements ProductRepository {
   async getImage(id: number): Promise<ProductImage | undefined> {
     const imageUrl = (await this.snapshot()).imageUrlById.get(id);
     if (imageUrl === undefined) return undefined;
-    const result = await this.options.imageCache.get(id, () => this.fetchImage(imageUrl));
-    this.logIfStale('image.stale_served', result, { productId: id });
+    const result = await this.options.imageCache.get(
+      id,
+      () => this.fetchImage(imageUrl),
+      this.refreshFailedLogger('image.refresh_failed', { productId: id }),
+    );
     return result.value;
   }
 
   private async snapshot(): Promise<CatalogueSnapshot> {
-    const result = await this.options.catalogueCache.get('catalogue', () => this.fetchCatalogue());
-    this.logIfStale('catalogue.stale_served', result);
+    const result = await this.options.catalogueCache.get(
+      'catalogue',
+      () => this.fetchCatalogue(),
+      this.refreshFailedLogger('catalogue.refresh_failed'),
+    );
     return result.value;
   }
 
-  /** Warns once per failed refresh; stale copies served inside the back-off window are not re-logged. */
-  private logIfStale(event: string, result: CacheResult<unknown>, context: Record<string, unknown> = {}): void {
-    if (!result.stale || !result.refreshAttempted) return;
-    this.options.logger.warn(event, {
-      ...context,
-      ageSeconds: Math.round(result.ageMs / 1000),
-      reason: describeError(result.error),
-    });
+  /** One warning per failed background refresh; the old copy keeps being served (D-011). */
+  private refreshFailedLogger(event: string, context: Record<string, unknown> = {}): BackgroundErrorHandler {
+    return (error, staleAgeMs) => {
+      this.options.logger.warn(event, {
+        ...context,
+        ageSeconds: Math.round(staleAgeMs / 1000),
+        reason: describeError(error),
+      });
+    };
   }
 
   private async fetchCatalogue(): Promise<CatalogueSnapshot> {

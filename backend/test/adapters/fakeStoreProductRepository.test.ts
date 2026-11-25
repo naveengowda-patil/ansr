@@ -3,6 +3,7 @@ import { UpstreamError } from '../../src/errors.js';
 import {
   BACKOFF_MS,
   createFakeStoreRepository as setup,
+  deferred,
   imageResponse,
   MAX_STALE_MS,
   neverResolvesUntilAborted,
@@ -10,8 +11,6 @@ import {
   productsFixture,
   TTL_MS,
 } from '../support/fakeStore.js';
-
-const down = () => new Response('down', { status: 500 });
 
 describe('FakeStoreProductRepository (§5.6)', () => {
   describe('mapping', () => {
@@ -83,133 +82,175 @@ describe('FakeStoreProductRepository (§5.6)', () => {
     });
   });
 
-  describe('cache with stale fallback (D-011)', () => {
-    it('fresh: serves from the cache without calling upstream', async () => {
-      const { repository, fetch, advance } = setup();
-      const first = await repository.getAll();
-      advance(TTL_MS - 1);
-
-      expect(await repository.getAll()).toBe(first);
-      expect(fetch).toHaveBeenCalledTimes(1);
-    });
-
-    it('expired + refetch ok: serves the new copy', async () => {
-      let title = 'Old title';
-      const [first] = productsFixture as Record<string, unknown>[];
-      const { repository, fetch, advance } = setup({ products: () => Response.json([{ ...first, title }]) });
-      await repository.getAll();
-      title = 'New title';
-      advance(TTL_MS);
-
-      expect((await repository.getAll())[0]?.title).toBe('New title');
-      expect(fetch).toHaveBeenCalledTimes(2);
-    });
-
-    it('expired + refetch fails: serves the stale copy and logs a warning', async () => {
-      let up = true;
-      const { repository, logger, advance } = setup({
-        products: () => (up ? Response.json(productsFixture) : down()),
-      });
-      const first = await repository.getAll();
-      up = false;
-      advance(TTL_MS + 60_000);
-
-      expect(await repository.getAll()).toBe(first);
-      expect(logger.withMessage('catalogue.stale_served')).toEqual([
-        {
-          level: 'warn',
-          message: 'catalogue.stale_served',
-          context: { ageSeconds: 360, reason: 'Product source responded with HTTP 500' },
-        },
-      ]);
-    });
-
-    it('stale copy older than the 24 h cap + refetch fails: throws', async () => {
-      let up = true;
-      const { repository, advance } = setup({ products: () => (up ? Response.json(productsFixture) : down()) });
-      await repository.getAll();
-      up = false;
-      advance(MAX_STALE_MS + 1);
-
-      await expect(repository.getAll()).rejects.toBeInstanceOf(UpstreamError);
-    });
-
-    it('no copy + failure: throws UpstreamError', async () => {
-      const { repository } = setup({ products: down });
-      await expect(repository.getAll()).rejects.toBeInstanceOf(UpstreamError);
-    });
-  });
-
-  describe('retry back-off after a failed refresh (D-011)', () => {
-    async function catalogueOutage() {
-      let up = true;
-      const context = setup({ products: () => (up ? Response.json(productsFixture) : down()) });
+  describe('stale-while-revalidate, catalogue (D-011)', () => {
+    /** Catalogue loaded at t=0, then upstream answers are controlled per call. */
+    async function expiredCatalogue() {
+      let next: () => Response | Promise<Response> = () => Response.json(productsFixture);
+      const context = setup({ products: () => next() });
       const first = await context.repository.getAll();
-      up = false;
       context.advance(TTL_MS);
-      await context.repository.getAll(); // failed refresh: stale served, back-off starts
       return {
         ...context,
         first,
-        recover: () => {
-          up = true;
+        upstream: (respond: () => Response | Promise<Response>) => {
+          next = respond;
         },
       };
     }
 
-    it('within the window: serves stale with no upstream call and no extra warning', async () => {
-      const { repository, catalogueCalls, logger, advance, first } = await catalogueOutage();
+    it('fresh: serves from the cache without calling upstream', async () => {
+      const { repository, catalogueCalls, advance } = setup();
+      const first = await repository.getAll();
+      advance(TTL_MS - 1);
+
+      expect(await repository.getAll()).toBe(first);
+      expect(catalogueCalls()).toHaveLength(1);
+    });
+
+    it('expired: returns the old copy without waiting for upstream', async () => {
+      const { repository, first, upstream, settle } = await expiredCatalogue();
+      const held = deferred<Response>(); // upstream hasn't answered when we assert
+      upstream(() => held.promise);
+
+      expect(await repository.getAll()).toBe(first);
+
+      held.resolve(Response.json(productsFixture));
+      await settle();
+    });
+
+    it('expired: concurrent requests start exactly one background refresh', async () => {
+      const { repository, first, upstream, settle, catalogueCalls } = await expiredCatalogue();
+      const held = deferred<Response>();
+      upstream(() => held.promise);
+
+      const results = await Promise.all([repository.getAll(), repository.getById(1), repository.listCategories()]);
+      expect(results[0]).toBe(first);
+      expect(catalogueCalls()).toHaveLength(2);
+
+      held.resolve(Response.json(productsFixture));
+      await settle();
+      expect(catalogueCalls()).toHaveLength(2);
+    });
+
+    it('a successful refresh replaces the copy', async () => {
+      const { repository, upstream, settle } = await expiredCatalogue();
+      const [firstProduct, ...others] = productsFixture as Record<string, unknown>[];
+      upstream(() => Response.json([{ ...firstProduct, title: 'New title' }, ...others]));
+
+      await repository.getAll(); // old copy, refresh starts
+      await settle();
+
+      expect((await repository.getAll())[0]?.title).toBe('New title');
+    });
+
+    it('a failed refresh keeps serving the old copy and logs once', async () => {
+      const { repository, first, upstream, settle, logger, catalogueCalls } = await expiredCatalogue();
+      upstream(() => new Response('down', { status: 500 }));
+
+      expect(await repository.getAll()).toBe(first);
+      await settle();
+      expect(await repository.getAll()).toBe(first);
+      expect(await repository.getById(1)).toEqual(first[0]);
+      await settle();
+
+      expect(catalogueCalls()).toHaveLength(2);
+      expect(logger.withMessage('catalogue.refresh_failed')).toEqual([
+        {
+          level: 'warn',
+          message: 'catalogue.refresh_failed',
+          context: { ageSeconds: TTL_MS / 1000, reason: 'Product source responded with HTTP 500' },
+        },
+      ]);
+    });
+
+    it('respects the back-off: no refresh inside the window, one after it', async () => {
+      const { repository, upstream, settle, advance, catalogueCalls } = await expiredCatalogue();
+      upstream(() => new Response('down', { status: 500 }));
+      await repository.getAll();
+      await settle();
       expect(catalogueCalls()).toHaveLength(2);
 
       advance(BACKOFF_MS - 1);
-      expect(await repository.getAll()).toBe(first);
-      expect(await repository.getById(1)).toEqual(first[0]);
-
+      await repository.getAll();
+      await settle();
       expect(catalogueCalls()).toHaveLength(2);
-      expect(logger.withMessage('catalogue.stale_served')).toHaveLength(1);
-    });
 
-    it('after the window: retries upstream', async () => {
-      const { repository, catalogueCalls, logger, advance, first } = await catalogueOutage();
-
-      advance(BACKOFF_MS);
-      expect(await repository.getAll()).toBe(first);
-
+      advance(1);
+      await repository.getAll();
+      await settle();
       expect(catalogueCalls()).toHaveLength(3);
-      expect(logger.withMessage('catalogue.stale_served')).toHaveLength(2);
     });
 
-    it('after the window: a successful retry serves fresh data', async () => {
-      const { repository, catalogueCalls, advance, first, recover } = await catalogueOutage();
-      recover();
-      advance(BACKOFF_MS);
+    it('past the 24 h cap: the request waits for upstream and fails with UpstreamError', async () => {
+      const { repository, upstream, advance, catalogueCalls } = await expiredCatalogue();
+      upstream(() => new Response('down', { status: 500 }));
+      advance(MAX_STALE_MS); // copy is now TTL + 24 h old
+
+      await expect(repository.getAll()).rejects.toBeInstanceOf(UpstreamError);
+      expect(catalogueCalls()).toHaveLength(2);
+    });
+
+    it('past the 24 h cap: the request waits and gets the new copy when upstream is back', async () => {
+      const { repository, first, advance } = await expiredCatalogue();
+      advance(MAX_STALE_MS);
 
       const refreshed = await repository.getAll();
       expect(refreshed).not.toBe(first);
       expect(refreshed).toEqual(first);
-      expect(catalogueCalls()).toHaveLength(3);
     });
 
-    it('images: within the window no image request is made; after it, one is', async () => {
-      let up = true;
-      const { repository, imageCalls, advance, logger } = setup({
-        image: () => (up ? imageResponse('image/png') : down()),
-      });
-      await repository.getAll();
-      await repository.getImage(1);
-      up = false; // only images fail; the catalogue stays reachable and simply refreshes
-      advance(TTL_MS);
-      expect(await repository.getImage(1)).toEqual({ contentType: 'image/png', data: PNG_BYTES });
+    it('no copy + failure: throws UpstreamError', async () => {
+      const { repository } = setup({ products: () => new Response('down', { status: 500 }) });
+      await expect(repository.getAll()).rejects.toBeInstanceOf(UpstreamError);
+    });
+  });
+
+  describe('stale-while-revalidate, images (D-011)', () => {
+    async function expiredImage() {
+      let next: () => Response | Promise<Response> = () => imageResponse('image/png');
+      const context = setup({ image: () => next() });
+      await context.repository.getImage(1);
+      context.advance(TTL_MS);
+      await context.repository.getAll(); // refresh the catalogue too so only the image is under test
+      await context.settle();
+      return {
+        ...context,
+        upstream: (respond: () => Response | Promise<Response>) => {
+          next = respond;
+        },
+      };
+    }
+
+    it('expired: returns the old image without waiting, with one background refresh', async () => {
+      const { repository, upstream, settle, imageCalls } = await expiredImage();
+      const held = deferred<Response>();
+      upstream(() => held.promise);
+
+      const results = await Promise.all([repository.getImage(1), repository.getImage(1)]);
+      expect(results).toEqual([
+        { contentType: 'image/png', data: PNG_BYTES },
+        { contentType: 'image/png', data: PNG_BYTES },
+      ]);
       expect(imageCalls()).toHaveLength(2);
 
+      held.resolve(imageResponse('image/jpeg'));
+      await settle();
+      expect((await repository.getImage(1))?.contentType).toBe('image/jpeg');
+    });
+
+    it('a failed refresh keeps the old image, logs once and backs off', async () => {
+      const { repository, upstream, settle, advance, logger, imageCalls } = await expiredImage();
+      upstream(() => new Response('down', { status: 500 }));
+
+      await repository.getImage(1);
+      await settle();
       advance(BACKOFF_MS - 1);
       expect(await repository.getImage(1)).toEqual({ contentType: 'image/png', data: PNG_BYTES });
-      expect(imageCalls()).toHaveLength(2);
+      await settle();
 
-      advance(1);
-      await repository.getImage(1);
-      expect(imageCalls()).toHaveLength(3);
-      expect(logger.withMessage('image.stale_served')).toHaveLength(2);
+      expect(imageCalls()).toHaveLength(2);
+      expect(logger.withMessage('image.refresh_failed')).toHaveLength(1);
+      expect(logger.withMessage('image.refresh_failed')[0]?.context).toMatchObject({ productId: 1 });
     });
   });
 

@@ -1,7 +1,13 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { UpstreamError } from '../../src/errors.js';
-import { createFakeStoreRepository, imageResponse } from '../support/fakeStore.js';
+import {
+  createFakeStoreRepository,
+  imageResponse,
+  MAX_STALE_MS,
+  productsFixture,
+  TTL_MS,
+} from '../support/fakeStore.js';
 import { buildProduct, FakeProductRepository } from '../support/fakes.js';
 import { createTestApp } from '../support/testApp.js';
 
@@ -35,6 +41,25 @@ describe('GET /products/featured (AC-1, §6.3)', () => {
     const { app } = createTestApp({ productRepository: failingRepository() });
     const response = await request(app).get('/products/featured');
 
+    expect(response.status).toBe(502);
+    expect(response.body.error.code).toBe('UPSTREAM_ERROR');
+  });
+
+  it('serves the cached catalogue while Fake Store is down, and 502s once it is past the 24 h cap (D-011)', async () => {
+    let up = true;
+    const fakeStore = createFakeStoreRepository({
+      products: () => (up ? Response.json(productsFixture) : new Response('down', { status: 503 })),
+    });
+    const { app } = createTestApp({ productRepository: fakeStore.repository });
+    await request(app).get('/products/featured').expect(200);
+    up = false;
+
+    fakeStore.advance(TTL_MS);
+    await request(app).get('/products/featured').expect(200);
+    await fakeStore.settle();
+
+    fakeStore.advance(MAX_STALE_MS);
+    const response = await request(app).get('/products/featured');
     expect(response.status).toBe(502);
     expect(response.body.error.code).toBe('UPSTREAM_ERROR');
   });
