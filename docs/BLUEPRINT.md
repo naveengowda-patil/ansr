@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.2, reviewed |
+| Status | v0.3, reviewed |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -97,6 +97,7 @@ backend/
 │   ├── app.ts               # createApp(deps): Express app, no network port
 │   ├── config.ts            # the ONLY place that reads process.env; validates and fails fast
 │   ├── container.ts         # composition root: the ONLY place that instantiates adapters
+│   ├── errors.ts            # AppError subclasses: ValidationError, NotFoundError, UpstreamError (shared by routes and adapters)
 │   ├── ports/               # interfaces routes depend on
 │   │   ├── ProductRepository.ts
 │   │   ├── ProductSearchEngine.ts
@@ -112,7 +113,6 @@ backend/
 │   ├── routes/              # one file per resource; depend on ports + domain only
 │   │   ├── health.ts  products.ts  categories.ts  enquiries.ts
 │   ├── http/
-│   │   ├── errors.ts            # AppError subclasses: ValidationError, NotFoundError, UpstreamError
 │   │   ├── errorHandler.ts      # the single error middleware (§5.9)
 │   │   └── validate.ts          # zod parse helpers → ValidationError
 │   ├── adapters/
@@ -151,7 +151,7 @@ interface AppDeps {
     salesInboxEmail: string;
     mailFrom: string;
     jsonBodyLimit: string;      // e.g. "10kb"
-    imageCacheMaxAgeSeconds: number;
+    imageClientMaxAgeSeconds: number;
   };
 }
 ```
@@ -236,9 +236,10 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
 - **Cache with stale fallback** (D-011): the catalogue snapshot is held in a `TtlCache`.
   - Within `PRODUCT_CACHE_TTL_SECONDS`: served from the cache, with no upstream call.
   - After the TTL: refetch. On success, the copy and its timestamp are replaced.
-  - If the refetch fails and a last good copy exists: serve the stale copy and log a warning (`catalogue.stale_served`, with the copy's age and the failure reason).
-  - If the refetch fails and there is no copy: `UpstreamError` (502).
-  - Concurrent refetches share one in-flight request (single-flight). Failures are never cached. There is no maximum stale age.
+  - If the refetch fails and a last good copy exists that is at most `PRODUCT_STALE_MAX_AGE_SECONDS` old (default 86400 = 24 h): serve the stale copy and log a warning (`catalogue.stale_served`, with the copy's age and the failure reason).
+  - If the refetch fails and there is no copy, or the copy is older than that cap: `UpstreamError` (502).
+  - Concurrent refetches share one in-flight request (single-flight). Failures are never cached.
+  - The caches are `TtlCache` instances created in `container.ts` and injected into the adapter.
 - **Validation:** upstream JSON is parsed with a zod schema. Timeout, network error, non-2xx or schema mismatch → `UpstreamError` (details logged, never returned to the client).
 - **Mapping:** Fake Store `{ id, title, price, description, category, image, rating }` → `Product` with `currency: "USD"`. The upstream `image` URL is kept internal to the adapter and never exposed by the API.
 - **Images** (D-001): `getImage(id)` looks up the product's internal image URL, then applies these guards. Each failure → `UpstreamError`, with details logged.
@@ -314,6 +315,7 @@ Read and validated only in `src/config.ts`; the app fails fast at startup on inv
 | `PRODUCT_API_BASE_URL` | `https://fakestoreapi.com` | |
 | `PRODUCT_API_TIMEOUT_MS` | `5000` | Per catalogue request |
 | `PRODUCT_CACHE_TTL_SECONDS` | `300` | Catalogue snapshot + image cache TTL; stale copy served if refetch fails |
+| `PRODUCT_STALE_MAX_AGE_SECONDS` | `86400` | Oldest copy (catalogue or image) that may be served when a refetch fails |
 | `IMAGE_HOST_ALLOWLIST` | `fakestoreapi.com` | Comma-separated hostnames, exact match |
 | `IMAGE_TIMEOUT_MS` | `5000` | Per image request |
 | `IMAGE_CACHE_MAX_ENTRIES` | `100` | Bounded image cache |
@@ -613,7 +615,7 @@ The root `README.md` (written in the backend PR, completed in the iOS PR) covers
   - Optionally Node.js 24, for backend tests outside Docker.
 - **Quick start:** the steps in §8.2, and where to see the enquiry email (Mailpit at http://localhost:8025).
 - **Running tests:**
-  - backend: `cd backend && npm ci && npm test`
+  - backend: `cd backend && npm ci && npm test` (Node 24), or with Docker only: `docker build --target test backend`
   - iOS: ⌘U in Xcode, or `xcodebuild test` with a simulator destination
 - Configuration: a pointer to `.env.example` and §5.10.
 - Troubleshooting: ports 3000, 8025 or 1025 already in use; the simulator can't reach the backend because the API isn't running.
@@ -632,8 +634,9 @@ Tests never hit the real network. They test behaviour through public interfaces,
 | Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
 | Search plug-and-play | Supertest + mock `Logger` | The **real `InMemorySearchEngine` created with limited capabilities**: an unsupported filter and an unsupported sort each → 400 naming them, and a warning is logged with `param`, `value` and the engine name. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. |
 | `InMemorySearchEngine` | Unit | each filter and sort; combined filters; paging and total; relevance = upstream order; default capabilities = everything; re-index skipped for the same snapshot |
-| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Cache:** fresh (no upstream call); expired + refetch OK (new copy); expired + refetch fails (stale copy served, warning logged); no copy + failure (`UpstreamError` → 502).<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; non-`image/*` rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
+| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Cache:** fresh (no upstream call); expired + refetch OK (new copy); expired + refetch fails (stale copy served, warning logged); stale copy older than the 24 h cap + failure (`UpstreamError`); no copy + failure (`UpstreamError` → 502).<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; non-`image/*` rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
 | `SmtpEmailService` | nodemailer stream/JSON transport (no SMTP server) | headers (to, from, reply-to), plain text only |
+| `TtlCache` | Unit with fake clock | fresh hit; refetch after TTL; stale served within the cap, not beyond it; failures not cached; single-flight; bounded entries (oldest evicted) |
 | `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing |
 
 ### 9.2 iOS (Swift Testing)
@@ -709,3 +712,4 @@ None open.
 |---|---|---|
 | 0.1 | 2026-11-25 | Initial blueprint: requirements, architecture, API contract, iOS design, config, tests, delivery flow. Project-specific rules moved here from `CLAUDE.md`. |
 | 0.2 | 2026-11-25 | Review changes: search also matches category; `InMemorySearchEngine` supports all filters/sorts, with capabilities injected through its constructor and unsupported params logged as warnings; catalogue cache serves a stale copy when a refetch fails; image proxy guards (`IMAGE_HOST_ALLOWLIST`, `IMAGE_TIMEOUT_MS`, no redirects, `nosniff`); iOS 18 minimum / Xcode 16+; README contents (§8.4); open questions resolved; Tuist future note. |
+| 0.3 | 2026-11-25 | Stale copies served for at most 24 h (`PRODUCT_STALE_MAX_AGE_SECONDS`). `errors.ts` moved to `src/` because adapters throw these errors too. Caches are created in the container and injected. `TtlCache` tests listed. Docker-only backend test command. |

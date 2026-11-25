@@ -127,19 +127,20 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 - **Decision:**
   - Every Fake Store call has a timeout (`PRODUCT_API_TIMEOUT_MS`).
   - The whole catalogue is cached in memory for `PRODUCT_CACHE_TTL_SECONDS` (default 300).
-  - After the TTL expires, the backend refetches. If Fake Store fails, it serves the last good copy and logs a warning.
-  - It returns 502 only when there is no copy at all.
+  - After the TTL expires, the backend refetches. If Fake Store fails, it serves the last good copy and logs a warning, as long as that copy is at most 24 hours old (`PRODUCT_STALE_MAX_AGE_SECONDS`).
+  - It returns 502 when there is no copy, or the copy is older than the cap.
   - Concurrent refetches share one request.
 - **Why:**
   - The catalogue is small (about 20 items), so one snapshot serves every read endpoint.
   - The stale fallback keeps the app working through short upstream outages, and Fake Store is a free public API that does go down.
 - **Trade-offs:**
-  - There is no maximum stale age, so during a long outage the app shows old data. The warning makes that visible in the logs.
+  - During an outage the app can show data up to 24 hours old. Each time it does, a warning is logged. After 24 hours, a clear error is better than data that may be wrong (for example, old prices).
   - Each instance has its own cache. Redis or ElastiCache can replace it later behind the same adapter.
 - **Tests:**
   - Fresh copy is served without an upstream call.
   - Expired copy with a successful refetch.
   - Expired copy with a failed refetch serves the stale copy.
+  - A copy older than 24 hours with a failed refetch returns 502.
   - No copy and a failed fetch returns 502.
 - **Blueprint:** §5.6, §9.1
 
