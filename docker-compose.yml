@@ -1,0 +1,31 @@
+# Local stack (blueprint §8.2): the API plus Mailpit to catch enquiry emails.
+#   cp .env.example .env
+#   docker compose up --build
+# API: http://localhost:3000  ·  Mailpit inbox: http://localhost:8025
+
+services:
+  api:
+    build:
+      context: ./backend
+      target: runtime
+    env_file: .env
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    depends_on:
+      mailpit:
+        condition: service_started
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:$${PORT:-3000}/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.34
+    ports:
+      - "8025:8025" # web UI
+      - "1025:1025" # SMTP
+    restart: unless-stopped
