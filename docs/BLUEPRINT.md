@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.6, backend implemented |
+| Status | v0.7, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -93,7 +93,8 @@ No other runtime dependencies. Logging uses a small injected `Logger` interface 
 ```
 backend/
 ├── src/
-│   ├── server.ts            # startup only: load config, build container, listen, graceful shutdown
+│   ├── server.ts            # entry point: load config, build container, startServer, graceful shutdown
+│   ├── startup.ts           # startServer (listen, then non-blocking catalogue warm-up) and warmCatalogue
 │   ├── app.ts               # createApp(deps): Express app, no network port
 │   ├── config.ts            # the ONLY place that reads process.env; validates and fails fast
 │   ├── container.ts         # composition root: the ONLY place that instantiates adapters
@@ -244,14 +245,25 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
   - a `Logger`
 - **One upstream call for data:** `GET {baseUrl}/products` loads the whole catalogue (≈20 items). `getById`, `getByIds` and `listCategories` are derived from that cached snapshot (categories = distinct values in first-seen order).
 - **Timeout:** every catalogue request uses `AbortSignal.timeout(PRODUCT_API_TIMEOUT_MS)` (images have their own, below).
-- **Cache with stale fallback** (D-011): the catalogue snapshot is held in a `TtlCache`.
-  - Within `PRODUCT_CACHE_TTL_SECONDS`: served from the cache, with no upstream call.
-  - After the TTL: refetch. On success, the copy and its timestamp are replaced.
-  - If the refetch fails and a last good copy exists that is at most `PRODUCT_STALE_MAX_AGE_SECONDS` old (default 86400 = 24 h): serve the stale copy and log a warning (`catalogue.stale_served`, with the copy's age and the failure reason).
-  - **Retry back-off:** after such a failed refresh, requests for the next `CACHE_RETRY_BACKOFF_SECONDS` (default 30) get the stale copy at once, with no upstream call. Requests no longer each wait for the timeout during an outage. The first request after the window retries. The warning is logged once per failed attempt, not once per request served during the window.
-  - If the refetch fails and there is no copy, or the copy is older than that cap: `UpstreamError` (502). With nothing to serve there is no back-off, so the next request retries.
-  - Concurrent refetches share one in-flight request (single-flight). Failures are never cached; only the retry time is remembered.
+- **Cache: stale-while-revalidate** (D-011). The catalogue snapshot, and each image, is held in a `TtlCache`. A request never waits for Fake Store when a usable copy exists.
+
+  | Copy's age | What the request gets | Upstream |
+  |---|---|---|
+  | No copy yet (first load, or evicted) | Waits for the fetch | Foreground fetch. Failure → `UpstreamError` (502). Failures are not cached and there's no back-off. |
+  | < `PRODUCT_CACHE_TTL_SECONDS` (300) | The cached copy (fresh) | None |
+  | TTL ≤ age ≤ `PRODUCT_STALE_MAX_AGE_SECONDS` (24 h) | The cached copy **immediately**, marked stale | A background refresh starts, unless one is already running for that key or the back-off window is open |
+  | > 24 h | Waits for a refresh | Foreground refresh, ignoring the back-off. Failure → `UpstreamError` (502) |
+
+  - **Background refresh:**
+    - Only one runs per key at a time. Concurrent requests don't start another; they reuse it, and they're served the stale copy meanwhile.
+    - On success, the new copy and its timestamp replace the old ones.
+    - On failure, one warning is logged (`catalogue.refresh_failed` / `image.refresh_failed`, with the copy's age and the reason), and the old copy keeps being served.
+    - Its errors are always caught, so it never causes an unhandled rejection.
+  - **Retry back-off:** after a failed background refresh, no new refresh starts for `CACHE_RETRY_BACKOFF_SECONDS` (default 30). The first request after the window starts one.
+  - **Single-flight:** foreground and background loads share one in-flight request per key.
+  - **Testing:** `TtlCache.whenIdle()` resolves once all background refreshes have settled, so tests never depend on timing.
   - The caches are `TtlCache` instances created in `container.ts` and injected into the adapter.
+- **Startup warm-up:** once the server is listening, `startServer` (`src/startup.ts`) starts one catalogue load. It doesn't block startup. If Fake Store is down, it logs a warning (`catalogue.warmup_failed`) and the server keeps running; the first request then does the foreground fetch.
 - **Validation:** upstream JSON is parsed with a zod schema. Timeout, network error, non-2xx or schema mismatch → `UpstreamError` (details logged, never returned to the client).
   - All or nothing (D-028): one malformed product rejects the whole response. The result is then the stale copy or a 502, never a partly valid catalogue.
 - **Mapping:** Fake Store `{ id, title, price, description, category, image, rating }` → `Product` with `currency: "USD"`. The upstream `image` URL is kept internal to the adapter and never exposed by the API.
@@ -261,7 +273,7 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
   3. **Timeout:** `AbortSignal.timeout(IMAGE_TIMEOUT_MS)`.
   4. **Content type:** only `image/jpeg`, `image/png`, `image/webp` and `image/gif` pass through. Parameters are ignored and case doesn't matter. Anything else is rejected, including `image/svg+xml` (SVG can carry scripts). The response uses the normalised type, e.g. `image/png`.
   5. **Max size:** rejected if `Content-Length` exceeds `IMAGE_MAX_BYTES`. Reading the body also stops once it passes the limit, which covers a missing or wrong `Content-Length`.
-  - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`, least recently used evicted) with the same TTL and stale fallback as the catalogue. A stale image is logged as `image.stale_served`.
+  - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`, least recently used evicted) with the same stale-while-revalidate behaviour, back-off and cap as the catalogue. A failed background refresh is logged as `image.refresh_failed`.
   - The route sets cache headers on the response (§6.6).
 
 ### 5.7 Search design
@@ -335,9 +347,9 @@ Every variable is one of three kinds:
 | `LOG_LEVEL` | Default | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `PRODUCT_API_BASE_URL` | **Required** | `https://fakestoreapi.com` | `http`/`https` URL |
 | `PRODUCT_API_TIMEOUT_MS` | Default | `5000` | Per catalogue request |
-| `PRODUCT_CACHE_TTL_SECONDS` | Default | `300` | Catalogue snapshot + image cache TTL; stale copy served if refetch fails |
+| `PRODUCT_CACHE_TTL_SECONDS` | Default | `300` | Catalogue + image copies are fresh this long; after it, they are served stale while a background refresh runs |
 | `PRODUCT_STALE_MAX_AGE_SECONDS` | Default | `86400` | Oldest copy (catalogue or image) that may be served when a refetch fails |
-| `CACHE_RETRY_BACKOFF_SECONDS` | Default | `30` | After a failed refresh, serve the stale copy without retrying upstream for this long (catalogue and images) |
+| `CACHE_RETRY_BACKOFF_SECONDS` | Default | `30` | After a failed background refresh, don't start another for this long (catalogue and images) |
 | `IMAGE_HOST_ALLOWLIST` | **Required** | `fakestoreapi.com` | Comma-separated hostnames, exact match; at least one |
 | `IMAGE_TIMEOUT_MS` | Default | `5000` | Per image request |
 | `IMAGE_CACHE_MAX_ENTRIES` | Default | `100` | Bounded image cache |
@@ -633,6 +645,7 @@ Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug co
 - Config only from environment (ECS task definition / Secrets Manager for SMTP credentials later).
 - JSON logs to stdout → CloudWatch Logs.
 - Graceful shutdown on `SIGTERM` (stop accepting connections, finish in-flight requests).
+- Catalogue warm-up after listening (§5.6), so the first user request after a deploy is normally served from the cache.
 - Email in production: Amazon SES via its SMTP interface works with the existing `SmtpEmailService` by config alone; an SES-API adapter would be a new `EmailService`.
 
 ### 8.4 README contents
@@ -665,9 +678,11 @@ Tests never hit the real network. They test behaviour through public interfaces,
 | Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
 | Search plug-and-play | Supertest + mock `Logger` | The **real `InMemorySearchEngine` created with limited capabilities**: an unsupported filter and an unsupported sort each → 400 naming them, and a warning is logged with `param`, `value` and the engine name. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. |
 | `InMemorySearchEngine` | Unit | each filter and sort; combined filters; paging and total; relevance = upstream order; default capabilities = everything; re-index skipped for the same snapshot |
-| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Cache:** fresh (no upstream call); expired + refetch OK (new copy); expired + refetch fails (stale copy served, warning logged); stale copy older than the 24 h cap + failure (`UpstreamError`); no copy + failure (`UpstreamError` → 502).<br>**Retry back-off, catalogue and image:** within the window there is no upstream call and the stale copy is served; after the window it retries.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
+| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Stale-while-revalidate, catalogue and image:**<br>• an expired copy is returned without waiting for upstream (the upstream response is held back until after the assertion);<br>• exactly one background refresh for concurrent requests;<br>• a successful refresh replaces the copy;<br>• a failed refresh keeps serving the old copy and logs once;<br>• back-off is respected (no refresh inside the window, one after it);<br>• past the 24 h cap the request waits and gets `UpstreamError`;<br>• no copy + failure → `UpstreamError`.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
 | `SmtpEmailService` | nodemailer stream/JSON transport (no SMTP server) | headers (to, from, reply-to), plain text only |
-| `TtlCache` | Unit with fake clock | fresh hit; refetch after TTL; stale served within the cap, not beyond it; retry back-off (no loader call inside the window, retry after it); failures not cached; single-flight; bounded entries (oldest evicted) |
+| `TtlCache` | Unit with fake clock + `whenIdle()` | fresh hit; expired copy returned immediately and marked stale while one background refresh runs; refresh success replaces the copy; refresh failure keeps the copy, calls the error callback once and starts the back-off; no refresh inside the window, one after it; past the cap the call waits and rethrows; first load waits; a throwing error callback never causes an unhandled rejection; single-flight; bounded entries (oldest evicted) |
+| `startup.ts` | Real server on port 0 + fake repository | `/health` answers while the warm-up is still pending; a failed warm-up logs `catalogue.warmup_failed` and the server keeps serving; a successful warm-up fills the cache |
+| Routes (cache past cap) | Supertest + real `FakeStoreProductRepository` | catalogue older than 24 h and Fake Store down → `GET /products/featured` is 502 |
 | `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing |
 
 ### 9.2 iOS (Swift Testing)
@@ -747,3 +762,4 @@ None open.
 | 0.4 | 2026-11-25 | Backend implementation sync. The structure gains `domain/email.ts` and `http/params.ts`. The engine's default capabilities come from `allCapabilities()`, a function, so no shared mutable set exists. Stale images are logged as `image.stale_served`. |
 | 0.5 | 2026-11-25 | Drift fixes found in review (text only): `Logger` includes `debug`; the repository receives two `TtlCache` instances rather than a clock and limits; `SmtpEmailService` depends on a narrow `MailTransport`; test helpers live in `test/support/` and the only fixture is `products.json`; §5.10 marks each variable as required, default or optional. |
 | 0.6 | 2026-11-25 | Review changes: retry back-off after a failed refresh (`CACHE_RETRY_BACKOFF_SECONDS`, default 30); images limited to JPEG, PNG, WebP and GIF (SVG rejected); all-or-nothing catalogue validation documented (D-028); `GET /products` absent vs present-but-empty params (§6.4); iOS `Endpoints` never sends empty values, and search is disabled while the trimmed text is empty (§7.5, §7.8). |
+| 0.7 | 2026-11-25 | Cache switched to stale-while-revalidate: after the TTL the copy is returned immediately and refreshed in the background (one per key, errors always caught, back-off reused, 24 h cap still waits). `TtlCache.whenIdle()` for tests. Log events renamed to `catalogue.refresh_failed` / `image.refresh_failed`. Startup catalogue warm-up in the new `src/startup.ts`. Tests table updated. |

@@ -123,30 +123,37 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - A queue (for example SQS) is the next step if delivery guarantees are needed.
 - **Blueprint:** §5.8, §6.9
 
-### D-011 — Upstream timeout and cache, with stale fallback
-- **Decision:**
-  - Every Fake Store call has a timeout (`PRODUCT_API_TIMEOUT_MS`).
-  - The whole catalogue is cached in memory for `PRODUCT_CACHE_TTL_SECONDS` (default 300).
-  - After the TTL expires, the backend refetches. If Fake Store fails, it serves the last good copy and logs a warning, as long as that copy is at most 24 hours old (`PRODUCT_STALE_MAX_AGE_SECONDS`).
-  - It returns 502 when there is no copy, or the copy is older than the cap.
-  - **Retry back-off:** after a failed refresh, requests get the stale copy immediately, without calling upstream, for `CACHE_RETRY_BACKOFF_SECONDS` (default 30). The next request after that retries. This applies to the catalogue and to each image.
-  - Concurrent refetches share one request.
+### D-011 — How the cache works: stale-while-revalidate, with back-off and a 24 h cap
+- **Decision:** The catalogue (one snapshot) and each image are cached in memory, and every Fake Store call has a timeout (`PRODUCT_API_TIMEOUT_MS`, 5 s).
+  - **Fresh** (younger than `PRODUCT_CACHE_TTL_SECONDS`, 5 min): served from memory.
+  - **Expired:** the copy is still returned **immediately**, and one background refresh fetches a new copy for the next requests.
+    - **Refresh succeeds:** the copy is replaced.
+    - **Refresh fails:** one warning is logged and the old copy keeps being served. No new refresh starts for `CACHE_RETRY_BACKOFF_SECONDS` (30 s).
+  - **Older than `PRODUCT_STALE_MAX_AGE_SECONDS` (24 h):** the request waits for a refresh and gets a 502 if it fails.
+  - **No copy at all** (first load): the request waits for the fetch. A warm-up at startup normally does this before any user arrives.
+- **What users see:**
+  - Users never wait for Fake Store after the first load.
+  - Data is at most one refresh behind: normally at most one TTL old, plus the time a refresh takes.
+  - During an outage, the data can be up to 24 hours old, and a warning is logged every 30 seconds.
 - **Why:**
   - The catalogue is small (about 20 items), so one snapshot serves every read endpoint.
-  - The stale fallback keeps the app working through short upstream outages, and Fake Store is a free public API that does go down.
-  - Without the back-off, every request during an outage would wait for the full 5-second timeout before getting the stale copy. With it, at most one request per 30 seconds pays that cost, and the upstream isn't hammered while it recovers.
+  - With a plain TTL, one unlucky request every 5 minutes waits for Fake Store, up to the 5 s timeout when it's slow. Stale-while-revalidate takes Fake Store's speed off the request path.
+  - The back-off stops a struggling upstream being retried on every request. The cap stops very old data (for example, old prices) being shown as current.
+  - Fake Store is a free public API that does go down.
 - **Trade-offs:**
-  - During an outage the app can show data up to 24 hours old. Each time it does, a warning is logged. After 24 hours, a clear error is better than data that may be wrong (for example, old prices).
+  - The first request after the TTL gets data that is up to one refresh old. For a product catalogue that's fine; for stock levels or prices with legal weight it wouldn't be.
+  - Recovery is noticed up to 30 seconds late.
+  - Background refreshes run outside any request. Their errors are always caught and logged, so they never become unhandled rejections.
   - Each instance has its own cache. Redis or ElastiCache can replace it later behind the same adapter.
-  - Recovery is noticed up to 30 seconds late. The warning is logged once per failed attempt, not once per request served during the window.
-  - With no copy to serve there is no back-off, so each request still tries upstream. Failures are never cached.
-- **Tests:**
-  - Fresh copy is served without an upstream call.
-  - Expired copy with a successful refetch.
-  - Expired copy with a failed refetch serves the stale copy.
-  - A copy older than 24 hours with a failed refetch returns 502.
-  - No copy and a failed fetch returns 502.
-  - Within the back-off window there is no upstream call and the stale copy is served; after the window it retries.
+  - With no usable copy there's no back-off, so each request still tries upstream. Failures are never cached.
+- **Tests (catalogue and images):**
+  - An expired copy is returned without waiting for upstream.
+  - Concurrent requests trigger exactly one background refresh.
+  - A successful refresh replaces the copy.
+  - A failed refresh keeps the old copy and logs once.
+  - The back-off is respected.
+  - Past the cap, the request waits and gets a 502.
+  - A failed warm-up doesn't stop the server.
 - **Blueprint:** §5.6, §9.1
 
 ### D-028 — One malformed upstream product rejects the whole catalogue
