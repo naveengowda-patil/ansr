@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft v0.1, awaiting review |
+| Status | v0.2, reviewed |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -31,7 +31,7 @@ This is the single source of truth for **what** to build. Every change starts he
 |---|---|---|
 | AC-1 | **Home** shows 5 featured "top rated" products the business picked | Ordered list `FEATURED_PRODUCT_IDS` from config. Ids that don't exist are skipped. If fewer than 5 remain, fill up with the highest-rated products not already included (ranking §5.5). Max 5 products. |
 | AC-2 | **Categories**: open a category, see its top rated products first, then the rest | Top rated = the 3 highest-rated products in that category (§5.5). Rest = the remaining products of the category in upstream order. No duplicates. A category with ≤3 products has an empty `rest`. |
-| AC-3 | **Search**: type a term, tap search, only see matching products | Runs on explicit submit only. Case-insensitive substring match of the trimmed term on title **or** description. Filtering happens in the backend. |
+| AC-3 | **Search**: type a term, tap search, only see matching products | Runs on explicit submit only. Case-insensitive substring match of the trimmed term on title, description **or** category. Filtering happens in the backend. |
 | AC-4 | **Product details**: tap a tile to see details | Detail screen fetches the product by id. |
 | AC-5 | **Enquiry**: tap "Enquire", fill a short form, submit; sales inbox gets an email, customer sees "Thank you" | Fields `productId`, `name`, `email` required, `message` optional. Plain-text email to `SALES_INBOX_EMAIL` with `Reply-To` = customer. On success the sheet shows a thank-you state. |
 
@@ -75,6 +75,8 @@ Repository layout:
 
 ### 5.1 Stack and dependencies
 
+Why this stack: D-025.
+
 | Item | Choice | Reason |
 |---|---|---|
 | Runtime | Node.js 24 LTS (`.nvmrc`, Docker base image) | Current LTS; built-in `fetch` + `AbortSignal.timeout`. |
@@ -105,7 +107,7 @@ backend/
 │   │   ├── ranking.ts           # compareByRating (tie-break)
 │   │   ├── featured.ts          # selectFeatured
 │   │   ├── categoryRanking.ts   # splitTopRated
-│   │   ├── search.ts            # SearchQuery types, findUnsupported, matchesText
+│   │   ├── search.ts            # SearchQuery types, findUnsupported, matchesText, filter + sort rules
 │   │   └── enquiry.ts           # buildEnquiryEmail
 │   ├── routes/              # one file per resource; depend on ports + domain only
 │   │   ├── health.ts  products.ts  categories.ts  enquiries.ts
@@ -119,7 +121,7 @@ backend/
 │   │   ├── email/               # SmtpEmailService (nodemailer)
 │   │   └── logging/             # JsonLogger
 │   └── lib/
-│       └── TtlCache.ts          # generic TTL + single-flight cache, injected clock
+│       └── TtlCache.ts          # TTL cache: single-flight refetch, stale fallback on error, injected clock
 ├── test/
 │   ├── fixtures/fakestore/      # recorded upstream responses (JSON, images)
 │   ├── mocks/                   # in-memory fakes for the ports
@@ -174,7 +176,7 @@ interface ProductRepository {
   getById(id: number): Promise<Product | undefined>;
   getByIds(ids: readonly number[]): Promise<Product[]>;   // keeps input order, skips missing ids
   listCategories(): Promise<string[]>;
-  getImage(id: number): Promise<ProductImage | undefined>; // see OQ-1
+  getImage(id: number): Promise<ProductImage | undefined>; // D-001
 }
 interface ProductImage { contentType: string; data: Uint8Array }
 
@@ -194,6 +196,7 @@ interface SearchQuery {
 }
 interface SearchResult { ids: number[]; total: number }  // ids = the requested page only
 interface ProductSearchEngine {
+  readonly name: string;                     // used in logs, e.g. "in-memory"
   readonly capabilities: SearchCapabilities;
   index(products: readonly Product[]): Promise<void>;
   search(query: SearchQuery): Promise<SearchResult>;
@@ -219,19 +222,33 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
 - **Ranking** — `compareByRating(a, b)`: `rating.rate` desc, then `rating.count` desc, then `id` asc. Every "highest rated" choice uses this.
 - **Featured** — `selectFeatured(all, featuredIds, count = 5)`: walk `featuredIds` in order, keep existing products, drop duplicates; if fewer than `count`, append the highest-rated products not yet included; return at most `count`. The count of 5 is a fixed domain constant, not config.
 - **Category split** — `splitTopRated(productsInCategory, topCount = 3)`: `topRated` = first 3 by `compareByRating`; `rest` = remaining products in their original (upstream) order.
-- **Search match** — `matchesText(product, q)`: `q` already trimmed; case-insensitive substring of the whole phrase in `title` or `description` (not tokenised; category text does not count).
-- **Capability check** — `findUnsupported(query, capabilities)`: returns the filters present in the query and the sort that the engine does not support. Paging is always supported.
+- **Search match** — `matchesText(product, q)`: `q` already trimmed; case-insensitive substring of the whole phrase in `title`, `description` or `category` (not tokenised).
+- **Search filters** — `matchesFilters(product, query)`: every filter present must hold (AND). `q` via `matchesText`; `category` exact match; `minPrice ≤ price ≤ maxPrice` (inclusive, each bound optional); `rating.rate ≥ minRating`.
+- **Search sorts** — `compareForSort(sort)`: `relevance` = upstream order; `rating_desc` = `compareByRating`; `price_asc` / `price_desc` = by price, ties by `id` asc; `title_asc` = case-insensitive title (`localeCompare`, base sensitivity), ties by `id` asc.
+- **Capability check** — `findUnsupported(query, capabilities)`: returns each filter present in the query, and the sort, that the engine does not support, as `{ param, value }` pairs. Paging is always supported.
 - **Enquiry email** — `buildEnquiryEmail(product, enquiry, settings) → EmailMessage` (§5.8).
 
 ### 5.6 Fake Store adapter (`FakeStoreProductRepository`)
 
 - Receives through its constructor: `fetch` function, `baseUrl`, `timeoutMs`, `cacheTtlMs`, image cache limits, a clock, and a `Logger`.
 - **One upstream call for data:** `GET {baseUrl}/products` loads the whole catalogue (≈20 items). `getById`, `getByIds` and `listCategories` are derived from that cached snapshot (categories = distinct values in first-seen order).
-- **Timeout:** every upstream request uses `AbortSignal.timeout(PRODUCT_API_TIMEOUT_MS)`.
-- **Cache:** the catalogue snapshot is held in a `TtlCache` for `PRODUCT_CACHE_TTL_SECONDS`. Concurrent misses share one in-flight request (single-flight). Failures are not cached. No stale-on-error serving.
+- **Timeout:** every catalogue request uses `AbortSignal.timeout(PRODUCT_API_TIMEOUT_MS)` (images have their own, below).
+- **Cache with stale fallback** (D-011): the catalogue snapshot is held in a `TtlCache`.
+  - Within `PRODUCT_CACHE_TTL_SECONDS`: served from the cache, with no upstream call.
+  - After the TTL: refetch. On success, the copy and its timestamp are replaced.
+  - If the refetch fails and a last good copy exists: serve the stale copy and log a warning (`catalogue.stale_served`, with the copy's age and the failure reason).
+  - If the refetch fails and there is no copy: `UpstreamError` (502).
+  - Concurrent refetches share one in-flight request (single-flight). Failures are never cached. There is no maximum stale age.
 - **Validation:** upstream JSON is parsed with a zod schema. Timeout, network error, non-2xx or schema mismatch → `UpstreamError` (details logged, never returned to the client).
 - **Mapping:** Fake Store `{ id, title, price, description, category, image, rating }` → `Product` with `currency: "USD"`. The upstream `image` URL is kept internal to the adapter and never exposed by the API.
-- **Images:** `getImage(id)` looks up the product's internal image URL and fetches it only if its origin equals the configured `PRODUCT_API_BASE_URL` origin (SSRF defence). The response must have `Content-Type: image/*` and be ≤ `IMAGE_MAX_BYTES`, else `UpstreamError`. Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`, same TTL).
+- **Images** (D-001): `getImage(id)` looks up the product's internal image URL, then applies these guards. Each failure → `UpstreamError`, with details logged.
+  1. **Host allowlist:** the scheme is `http`/`https` and the host is exactly one of `IMAGE_HOST_ALLOWLIST`. Otherwise no request is made.
+  2. **No redirects:** fetched with `redirect: 'error'`, so a redirect can't lead outside the allowlist.
+  3. **Timeout:** `AbortSignal.timeout(IMAGE_TIMEOUT_MS)`.
+  4. **Content type:** only `image/*` responses are passed through.
+  5. **Max size:** rejected if `Content-Length` exceeds `IMAGE_MAX_BYTES`. Reading the body also stops once it passes the limit, which covers a missing or wrong `Content-Length`.
+  - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`) with the same TTL and stale fallback as the catalogue.
+  - The route sets cache headers on the response (§6.6).
 
 ### 5.7 Search design
 
@@ -242,16 +259,22 @@ Two responsibilities, two ports:
 
 **Flow for `GET /products`:**
 1. Validate the shape of all query params (§6.4). Apply defaults (`sort=relevance`, `page=1`, `pageSize=20`).
-2. `findUnsupported(query, engine.capabilities)`. If anything is unsupported → 400 `VALIDATION_ERROR` naming it, e.g. `Filter 'minPrice' is not supported yet.` / `Sort 'price_asc' is not supported yet.` A filter is never silently ignored.
-3. **Index sync:** `engine.index(await repository.getAll())`. The repository call is a cache hit; the in-memory engine skips re-indexing when it receives the same snapshot. (A hosted engine would be fed by an ingestion job instead; see OQ-2.)
+2. `findUnsupported(query, engine.capabilities)`. If anything is unsupported:
+   - log one warning per item through the injected `Logger`: `search.unsupported` with `param`, `value` and `engine` (`engine.name`);
+   - respond 400 `VALIDATION_ERROR` naming it, e.g. `Filter 'minPrice' is not supported yet.` or `Sort 'price_asc' is not supported yet.`
+   - A filter is never silently ignored, and an engine never receives a query it hasn't declared support for.
+3. **Index sync** (D-008): `engine.index(await repository.getAll())`. The repository call is a cache hit, and the in-memory engine skips re-indexing when it gets the same snapshot. A hosted engine would be fed by an ingestion job instead.
 4. `{ ids, total } = await engine.search(query)`.
 5. `items = await repository.getByIds(ids)` (order kept).
 6. Respond `{ items, total, page, pageSize }`.
 
-**`InMemorySearchEngine` capabilities:** filters `q`, `category`; sort `relevance` only (= upstream order); paging. Nothing else is processed for now.
-- `q` → `matchesText`. `category` → exact match. Unknown category as a filter → empty result (not 404).
+**`InMemorySearchEngine`:**
+- Constructor: `new InMemorySearchEngine({ name = 'in-memory', capabilities = ALL_CAPABILITIES })`. The container uses the defaults, so every filter and sort is supported. Tests can pass fewer capabilities to exercise the 400 path with the real engine.
+- Applies `matchesFilters` and `compareForSort` (§5.5), then pages. An unknown category used as a filter gives an empty result, not a 404.
 
 Category "top rated" stays a domain function (`splitTopRated`), not engine sorting.
+
+**Why ids first, then a store lookup** (D-027): the engine returns ids and the repository loads the products in one batched `getByIds`. Prices and details therefore always come from the source of truth, never from a possibly stale index. The cost is one extra lookup: microseconds in memory, a few ms against a database. If latency ever matters, the index can store full products instead without changing the API.
 
 Swapping engines (e.g. OpenSearch) = a new adapter implementing `ProductSearchEngine` with wider `capabilities`, wired in `container.ts`. No route or iOS change: the iOS `ProductQuery` already carries every field.
 
@@ -288,9 +311,11 @@ Read and validated only in `src/config.ts`; the app fails fast at startup on inv
 |---|---|---|
 | `PORT` | `3000` | |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
-| `PRODUCT_API_BASE_URL` | `https://fakestoreapi.com` | Also the only allowed image origin |
-| `PRODUCT_API_TIMEOUT_MS` | `5000` | Per upstream request |
-| `PRODUCT_CACHE_TTL_SECONDS` | `300` | Catalogue snapshot + image cache TTL |
+| `PRODUCT_API_BASE_URL` | `https://fakestoreapi.com` | |
+| `PRODUCT_API_TIMEOUT_MS` | `5000` | Per catalogue request |
+| `PRODUCT_CACHE_TTL_SECONDS` | `300` | Catalogue snapshot + image cache TTL; stale copy served if refetch fails |
+| `IMAGE_HOST_ALLOWLIST` | `fakestoreapi.com` | Comma-separated hostnames, exact match |
+| `IMAGE_TIMEOUT_MS` | `5000` | Per image request |
 | `IMAGE_CACHE_MAX_ENTRIES` | `100` | Bounded image cache |
 | `IMAGE_MAX_BYTES` | `5242880` | 5 MB |
 | `IMAGE_CLIENT_MAX_AGE_SECONDS` | `86400` | `Cache-Control` on image responses |
@@ -336,18 +361,18 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 
 ### 6.4 `GET /products` (AC-3, search and listing)
 
-| Param | Shape | Supported by `InMemorySearchEngine` |
+| Param | Shape | Meaning (§5.5) |
 |---|---|---|
-| `q` | string, trimmed, 1–100 chars; present-but-blank → 400 | yes |
-| `category` | string, 1–100 chars | yes |
-| `minPrice`, `maxPrice` | number ≥ 0; `minPrice ≤ maxPrice` | no → 400 |
-| `minRating` | number 0–5 | no → 400 |
-| `sort` | `relevance` \| `rating_desc` \| `price_asc` \| `price_desc` \| `title_asc` (default `relevance`) | `relevance` only → others 400 |
-| `page` | integer ≥ 1 (default 1) | yes |
-| `pageSize` | integer 1–50 (default 20) | yes |
+| `q` | string, trimmed, 1–100 chars; present-but-blank → 400 | case-insensitive match on title, description or category |
+| `category` | string, 1–100 chars | exact category |
+| `minPrice`, `maxPrice` | number ≥ 0; `minPrice ≤ maxPrice` | inclusive price bounds |
+| `minRating` | number 0–5 | `rating.rate ≥ minRating` |
+| `sort` | `relevance` \| `rating_desc` \| `price_asc` \| `price_desc` \| `title_asc` (default `relevance`) | result order |
+| `page` | integer ≥ 1 (default 1) | |
+| `pageSize` | integer 1–50 (default 20) | |
 
 - Unknown params or repeated params → 400 `VALIDATION_ERROR`.
-- Shape is validated first, then support (§5.7).
+- Shape is validated first, then engine support (§5.7). The default `InMemorySearchEngine` supports every filter and sort. An engine configured with fewer capabilities rejects the others with 400 and logs a warning.
 - No params → all products, paged.
 
 `200 { "items": Product[], "total": number, "page": number, "pageSize": number }`
@@ -358,8 +383,15 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 
 ### 6.6 `GET /products/{id}/image`
 
-`200` with the image bytes, upstream `Content-Type` (`image/*`) and `Cache-Control: public, max-age={IMAGE_CLIENT_MAX_AGE_SECONDS}`.
-Invalid id → 400. Unknown product → 404. Upstream failure, wrong content type or too large → 502.
+`200` with the image bytes and these headers:
+- `Content-Type`: the upstream `image/*` type
+- `Cache-Control: public, max-age={IMAGE_CLIENT_MAX_AGE_SECONDS}`
+- `X-Content-Type-Options: nosniff`
+
+Errors:
+- Invalid id → 400.
+- Unknown product → 404.
+- Any image guard failing (host not allowlisted, redirect, timeout, not `image/*`, too large) or another upstream failure, with no cached copy → 502.
 
 ### 6.7 `GET /categories`
 
@@ -390,7 +422,9 @@ Errors: 400 validation, 404 unknown product, 502 email or product source failure
 
 ### 7.1 Stack
 
-- SwiftUI, Swift 6 language mode (strict concurrency), deployment target **iOS 17.0**.
+Why this stack: D-025.
+
+- SwiftUI, Swift 6 language mode (strict concurrency), deployment target **iOS 18.0** (D-013). Requires **Xcode 16 or newer**.
 - Swift Concurrency only (`async`/`await`); no completion handlers, no Combine.
 - Tests with Swift Testing.
 - **No third-party dependencies.** The Xcode project uses synchronized folder groups (Xcode 16+), so files added to a folder are picked up without editing the project file; no project generator.
@@ -436,7 +470,7 @@ enum ViewState<Value> {
 
 ### 7.4 Coordinator and navigation
 
-- One `AppCoordinator` (`@Observable`, `@MainActor`) owns all navigation state: `path: [Route]` and `sheet: Sheet?`. No child coordinators.
+- One `AppCoordinator` (`@Observable`, `@MainActor`) owns all navigation state: `path: [Route]` and `sheet: Sheet?`. No child coordinators (D-026). It can be split per flow later, e.g. checkout.
 - It is the only place that creates screens and ViewModels, from `AppDependencies`. New screens = a new `Route`/`Sheet` case + a factory branch in the coordinator.
 - No `NavigationLink(destination:)`, `isPresented` flags or navigation state in views or ViewModels.
 - ViewModels navigate only through `CatalogueNavigating`; they never reference `AppCoordinator`, `Route` or other screens.
@@ -539,7 +573,7 @@ Price display: formatted in the ViewModel with the product's `currency`.
 ### 8.1 Prerequisites
 
 - Docker with Compose v2 (Docker Desktop, OrbStack or Colima).
-- Xcode 26 with an iOS 17+ simulator (iOS 18 and 26 simulators both work).
+- **Xcode 16 or newer** (built with Xcode 26) and an iOS 18+ simulator.
 - Optional, for running backend tests outside Docker: Node.js 24 (`.nvmrc`).
 
 ### 8.2 Run (target: under 10 minutes)
@@ -568,6 +602,22 @@ Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug co
 - Graceful shutdown on `SIGTERM` (stop accepting connections, finish in-flight requests).
 - Email in production: Amazon SES via its SMTP interface works with the existing `SmtpEmailService` by config alone; an SES-API adapter would be a new `EmailService`.
 
+### 8.4 README contents
+
+The root `README.md` (written in the backend PR, completed in the iOS PR) covers:
+- What the project is, with links to this blueprint, `DECISIONS.md` and `AI_USAGE.md`.
+- **Prerequisites:**
+  - Docker with Compose v2.
+  - **Xcode 16 or newer**, which is required for the iOS 18 deployment target and the synchronized-folder project format.
+  - An iOS 18+ simulator.
+  - Optionally Node.js 24, for backend tests outside Docker.
+- **Quick start:** the steps in §8.2, and where to see the enquiry email (Mailpit at http://localhost:8025).
+- **Running tests:**
+  - backend: `cd backend && npm ci && npm test`
+  - iOS: ⌘U in Xcode, or `xcodebuild test` with a simulator destination
+- Configuration: a pointer to `.env.example` and §5.10.
+- Troubleshooting: ports 3000, 8025 or 1025 already in use; the simulator can't reach the backend because the API isn't running.
+
 ---
 
 ## 9. Testing
@@ -578,11 +628,11 @@ Tests never hit the real network. They test behaviour through public interfaces,
 
 | Area | How | Must cover |
 |---|---|---|
-| Domain | Unit tests on pure functions | ranking tie-break; `selectFeatured` (order kept, missing skipped, duplicates dropped, fill to 5, never >5, catalogue <5); `splitTopRated` (top 3, rest in upstream order, no duplicates, ≤3 products); `matchesText` (case-insensitive, title or description, phrase); `findUnsupported`; `buildEnquiryEmail` (plain text, reply-to, subject CR/LF stripped) |
-| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies |
-| Search plug-and-play | Supertest | unsupported filter → 400 naming it; unsupported sort → 400; a **fake engine supporting everything receives the exact parsed `SearchQuery`** and the response items follow its id order and total |
-| `InMemorySearchEngine` | Unit | `q`, `category`, paging, total, relevance = upstream order, re-index skipped for same snapshot |
-| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock | mapping; cache hit within TTL and refetch after; single-flight; timeout → `UpstreamError`; non-2xx / schema mismatch → `UpstreamError`; image origin check, content-type and size limits |
+| Domain | Unit tests on pure functions | ranking tie-break; `selectFeatured` (order kept, missing skipped, duplicates dropped, fill to 5, never >5, catalogue <5); `splitTopRated` (top 3, rest in upstream order, no duplicates, ≤3 products); `matchesText` (case-insensitive, title, description or category, phrase); `matchesFilters` (each filter, inclusive bounds, AND); `compareForSort` (each sort, tie-breaks); `findUnsupported`; `buildEnquiryEmail` (plain text, reply-to, subject CR/LF stripped) |
+| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
+| Search plug-and-play | Supertest + mock `Logger` | The **real `InMemorySearchEngine` created with limited capabilities**: an unsupported filter and an unsupported sort each → 400 naming them, and a warning is logged with `param`, `value` and the engine name. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. |
+| `InMemorySearchEngine` | Unit | each filter and sort; combined filters; paging and total; relevance = upstream order; default capabilities = everything; re-index skipped for the same snapshot |
+| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Cache:** fresh (no upstream call); expired + refetch OK (new copy); expired + refetch fails (stale copy served, warning logged); no copy + failure (`UpstreamError` → 502).<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; non-`image/*` rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
 | `SmtpEmailService` | nodemailer stream/JSON transport (no SMTP server) | headers (to, from, reply-to), plain text only |
 | `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing |
 
@@ -637,15 +687,25 @@ Any change to requirements, architecture, the API contract, config, dependencies
 
 ## 11. Open questions
 
-| ID | Question | Default until answered |
+None open.
+
+| ID | Question | Resolution (2026-11-25) |
 |---|---|---|
-| OQ-1 | Image fetching extends `ProductRepository` with `getImage(id)`, beyond the four methods originally listed. Alternative: a separate `ProductImageSource` port (a fourth route dependency). | `getImage` on `ProductRepository`: images come from the same source as the data, so one adapter swap covers both. |
-| OQ-2 | When does the search engine get (re)indexed? | Before each search, the route passes the cached snapshot to `engine.index()`; the in-memory engine skips it when unchanged. Revisit when a hosted engine is added (ingestion job). |
+| OQ-1 | Where does image fetching live? | `getImage(id)` on `ProductRepository` (D-001). |
+| OQ-2 | When does the search engine get (re)indexed? | Before each search, skipped when the catalogue hasn't changed (D-008). |
 
 ---
 
-## 12. Changelog
+## 12. Future (not in scope)
+
+- **Tuist for the iOS project:** generate the project from a Swift manifest, so there are no `.xcodeproj` merge conflicts, and split it into modules (`Core`, `Networking`, `DesignSystem`, `Features`).
+- See `DECISIONS.md` → "What I'd do next" and "How it grows".
+
+---
+
+## 13. Changelog
 
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-11-25 | Initial blueprint: requirements, architecture, API contract, iOS design, config, tests, delivery flow. Project-specific rules moved here from `CLAUDE.md`. |
+| 0.2 | 2026-11-25 | Review changes: search also matches category; `InMemorySearchEngine` supports all filters/sorts, with capabilities injected through its constructor and unsupported params logged as warnings; catalogue cache serves a stale copy when a refetch fails; image proxy guards (`IMAGE_HOST_ALLOWLIST`, `IMAGE_TIMEOUT_MS`, no redirects, `nosniff`); iOS 18 minimum / Xcode 16+; README contents (§8.4); open questions resolved; Tuist future note. |
