@@ -24,6 +24,7 @@ describe('loadConfig (§5.10)', () => {
         timeoutMs: 5000,
         cacheTtlSeconds: 300,
         staleMaxAgeSeconds: 86_400,
+        retryBackoffSeconds: 30,
       },
       images: {
         hostAllowlist: ['fakestoreapi.com'],
@@ -44,6 +45,7 @@ describe('loadConfig (§5.10)', () => {
       ...required,
       PORT: '8080',
       PRODUCT_STALE_MAX_AGE_SECONDS: '3600',
+      CACHE_RETRY_BACKOFF_SECONDS: '5',
       IMAGE_HOST_ALLOWLIST: 'FakeStoreAPI.com, cdn.example.com',
       SMTP_SECURE: 'true',
       SMTP_USER: 'user',
@@ -52,6 +54,7 @@ describe('loadConfig (§5.10)', () => {
 
     expect(config.port).toBe(8080);
     expect(config.productApi.staleMaxAgeSeconds).toBe(3600);
+    expect(config.productApi.retryBackoffSeconds).toBe(5);
     expect(config.images.hostAllowlist).toEqual(['fakestoreapi.com', 'cdn.example.com']);
     expect(config.smtp).toMatchObject({ secure: true, user: 'user', pass: 'pass' });
   });
@@ -71,6 +74,7 @@ describe('loadConfig (§5.10)', () => {
     ['invalid sales email', { SALES_INBOX_EMAIL: 'sales' }, 'SALES_INBOX_EMAIL'],
     ['non-numeric timeout', { PRODUCT_API_TIMEOUT_MS: 'soon' }, 'PRODUCT_API_TIMEOUT_MS'],
     ['zero TTL', { PRODUCT_CACHE_TTL_SECONDS: '0' }, 'PRODUCT_CACHE_TTL_SECONDS'],
+    ['non-numeric back-off', { CACHE_RETRY_BACKOFF_SECONDS: 'later' }, 'CACHE_RETRY_BACKOFF_SECONDS'],
     ['invalid boolean', { SMTP_SECURE: 'yes' }, 'SMTP_SECURE'],
     ['invalid log level', { LOG_LEVEL: 'loud' }, 'LOG_LEVEL'],
   ])('fails fast on %s, naming the variable', (_label, overrides, variable) => {

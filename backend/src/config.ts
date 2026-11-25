@@ -15,6 +15,7 @@ export interface Config {
     readonly timeoutMs: number;
     readonly cacheTtlSeconds: number;
     readonly staleMaxAgeSeconds: number;
+    readonly retryBackoffSeconds: number;
   };
   readonly images: {
     readonly hostAllowlist: readonly string[];
@@ -74,6 +75,7 @@ const envSchema = z.object({
   PRODUCT_API_TIMEOUT_MS: positiveInt(5000),
   PRODUCT_CACHE_TTL_SECONDS: positiveInt(300),
   PRODUCT_STALE_MAX_AGE_SECONDS: positiveInt(86_400),
+  CACHE_RETRY_BACKOFF_SECONDS: positiveInt(30),
 
   IMAGE_HOST_ALLOWLIST: commaList.pipe(
     z.array(z.string().regex(/^[a-z0-9.-]+$/i, 'must be hostnames only')).min(1, 'must list at least one host'),
@@ -118,6 +120,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       timeoutMs: e.PRODUCT_API_TIMEOUT_MS,
       cacheTtlSeconds: e.PRODUCT_CACHE_TTL_SECONDS,
       staleMaxAgeSeconds: e.PRODUCT_STALE_MAX_AGE_SECONDS,
+      retryBackoffSeconds: e.CACHE_RETRY_BACKOFF_SECONDS,
     },
     images: {
       hostAllowlist: e.IMAGE_HOST_ALLOWLIST.map((host) => host.toLowerCase()),

@@ -1,80 +1,17 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
-import {
-  type CatalogueSnapshot,
-  FakeStoreProductRepository,
-  type FetchFn,
-} from '../../src/adapters/fakestore/FakeStoreProductRepository.js';
+import { describe, expect, it } from 'vitest';
 import { UpstreamError } from '../../src/errors.js';
-import { TtlCache } from '../../src/lib/TtlCache.js';
-import type { ProductImage } from '../../src/ports/ProductRepository.js';
-import { RecordingLogger } from '../support/fakes.js';
+import {
+  BACKOFF_MS,
+  createFakeStoreRepository as setup,
+  imageResponse,
+  MAX_STALE_MS,
+  neverResolvesUntilAborted,
+  PNG_BYTES,
+  productsFixture,
+  TTL_MS,
+} from '../support/fakeStore.js';
 
-/** Recorded from https://fakestoreapi.com/products on 2026-11-25. */
-const productsFixture: unknown = JSON.parse(
-  readFileSync(new URL('../fixtures/fakestore/products.json', import.meta.url), 'utf8'),
-);
-
-const BASE_URL = 'https://fakestoreapi.com';
-const TTL_MS = 300_000;
-const MAX_STALE_MS = 86_400_000;
-const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-type Route = (url: URL, init: RequestInit) => Promise<Response> | Response;
-
-interface SetupOptions {
-  readonly products?: Route;
-  readonly image?: Route;
-  readonly imageMaxBytes?: number;
-  readonly imageHostAllowlist?: readonly string[];
-  readonly timeoutMs?: number;
-}
-
-function setup(options: SetupOptions = {}) {
-  let time = 0;
-  const now = () => time;
-  const logger = new RecordingLogger();
-  const products: Route = options.products ?? (() => Response.json(productsFixture));
-  const image: Route =
-    options.image ?? (() => new Response(PNG_BYTES, { headers: { 'content-type': 'image/png' } }));
-  const fetch = vi.fn<FetchFn>(async (url, init) =>
-    url.pathname === '/products' ? products(url, init) : image(url, init),
-  );
-
-  const repository = new FakeStoreProductRepository({
-    fetch,
-    baseUrl: BASE_URL,
-    timeoutMs: options.timeoutMs ?? 1_000,
-    imageHostAllowlist: options.imageHostAllowlist ?? ['fakestoreapi.com'],
-    imageTimeoutMs: options.timeoutMs ?? 1_000,
-    imageMaxBytes: options.imageMaxBytes ?? 1_024,
-    catalogueCache: new TtlCache<'catalogue', CatalogueSnapshot>({
-      ttlMs: TTL_MS,
-      maxStaleAgeMs: MAX_STALE_MS,
-      maxEntries: 1,
-      now,
-    }),
-    imageCache: new TtlCache<number, ProductImage>({ ttlMs: TTL_MS, maxStaleAgeMs: MAX_STALE_MS, maxEntries: 10, now }),
-    logger,
-  });
-
-  return {
-    repository,
-    fetch,
-    logger,
-    advance: (ms: number) => {
-      time += ms;
-    },
-  };
-}
-
-const neverResolvesUntilAborted: Route = (_url, init) =>
-  new Promise((_resolve, reject) => {
-    init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
-  });
-
-const imageCalls = (fetch: ReturnType<typeof setup>['fetch']) =>
-  fetch.mock.calls.filter(([url]) => url.pathname !== '/products');
+const down = () => new Response('down', { status: 500 });
 
 describe('FakeStoreProductRepository (§5.6)', () => {
   describe('mapping', () => {
@@ -134,8 +71,9 @@ describe('FakeStoreProductRepository (§5.6)', () => {
       await expect(repository.getAll()).rejects.toThrow('HTTP 503');
     });
 
-    it('rejects a response with an unexpected shape', async () => {
-      const { repository } = setup({ products: () => Response.json([{ id: 'one' }]) });
+    it('rejects the whole response when one product has an unexpected shape (D-028)', async () => {
+      const [first, ...others] = productsFixture as Record<string, unknown>[];
+      const { repository } = setup({ products: () => Response.json([{ ...first, rating: undefined }, ...others]) });
       await expect(repository.getAll()).rejects.toThrow('unexpected shape');
     });
 
@@ -157,9 +95,8 @@ describe('FakeStoreProductRepository (§5.6)', () => {
 
     it('expired + refetch ok: serves the new copy', async () => {
       let title = 'Old title';
-      const { repository, fetch, advance } = setup({
-        products: () => Response.json([{ ...firstFixtureProduct(), title }]),
-      });
+      const [first] = productsFixture as Record<string, unknown>[];
+      const { repository, fetch, advance } = setup({ products: () => Response.json([{ ...first, title }]) });
       await repository.getAll();
       title = 'New title';
       advance(TTL_MS);
@@ -171,7 +108,7 @@ describe('FakeStoreProductRepository (§5.6)', () => {
     it('expired + refetch fails: serves the stale copy and logs a warning', async () => {
       let up = true;
       const { repository, logger, advance } = setup({
-        products: () => (up ? Response.json(productsFixture) : new Response('down', { status: 500 })),
+        products: () => (up ? Response.json(productsFixture) : down()),
       });
       const first = await repository.getAll();
       up = false;
@@ -179,15 +116,17 @@ describe('FakeStoreProductRepository (§5.6)', () => {
 
       expect(await repository.getAll()).toBe(first);
       expect(logger.withMessage('catalogue.stale_served')).toEqual([
-        { level: 'warn', message: 'catalogue.stale_served', context: { ageSeconds: 360, reason: 'Product source responded with HTTP 500' } },
+        {
+          level: 'warn',
+          message: 'catalogue.stale_served',
+          context: { ageSeconds: 360, reason: 'Product source responded with HTTP 500' },
+        },
       ]);
     });
 
     it('stale copy older than the 24 h cap + refetch fails: throws', async () => {
       let up = true;
-      const { repository, advance } = setup({
-        products: () => (up ? Response.json(productsFixture) : new Response('down', { status: 500 })),
-      });
+      const { repository, advance } = setup({ products: () => (up ? Response.json(productsFixture) : down()) });
       await repository.getAll();
       up = false;
       advance(MAX_STALE_MS + 1);
@@ -196,32 +135,105 @@ describe('FakeStoreProductRepository (§5.6)', () => {
     });
 
     it('no copy + failure: throws UpstreamError', async () => {
-      const { repository } = setup({ products: () => new Response('down', { status: 500 }) });
+      const { repository } = setup({ products: down });
       await expect(repository.getAll()).rejects.toBeInstanceOf(UpstreamError);
+    });
+  });
+
+  describe('retry back-off after a failed refresh (D-011)', () => {
+    async function catalogueOutage() {
+      let up = true;
+      const context = setup({ products: () => (up ? Response.json(productsFixture) : down()) });
+      const first = await context.repository.getAll();
+      up = false;
+      context.advance(TTL_MS);
+      await context.repository.getAll(); // failed refresh: stale served, back-off starts
+      return {
+        ...context,
+        first,
+        recover: () => {
+          up = true;
+        },
+      };
+    }
+
+    it('within the window: serves stale with no upstream call and no extra warning', async () => {
+      const { repository, catalogueCalls, logger, advance, first } = await catalogueOutage();
+      expect(catalogueCalls()).toHaveLength(2);
+
+      advance(BACKOFF_MS - 1);
+      expect(await repository.getAll()).toBe(first);
+      expect(await repository.getById(1)).toEqual(first[0]);
+
+      expect(catalogueCalls()).toHaveLength(2);
+      expect(logger.withMessage('catalogue.stale_served')).toHaveLength(1);
+    });
+
+    it('after the window: retries upstream', async () => {
+      const { repository, catalogueCalls, logger, advance, first } = await catalogueOutage();
+
+      advance(BACKOFF_MS);
+      expect(await repository.getAll()).toBe(first);
+
+      expect(catalogueCalls()).toHaveLength(3);
+      expect(logger.withMessage('catalogue.stale_served')).toHaveLength(2);
+    });
+
+    it('after the window: a successful retry serves fresh data', async () => {
+      const { repository, catalogueCalls, advance, first, recover } = await catalogueOutage();
+      recover();
+      advance(BACKOFF_MS);
+
+      const refreshed = await repository.getAll();
+      expect(refreshed).not.toBe(first);
+      expect(refreshed).toEqual(first);
+      expect(catalogueCalls()).toHaveLength(3);
+    });
+
+    it('images: within the window no image request is made; after it, one is', async () => {
+      let up = true;
+      const { repository, imageCalls, advance, logger } = setup({
+        image: () => (up ? imageResponse('image/png') : down()),
+      });
+      await repository.getAll();
+      await repository.getImage(1);
+      up = false; // only images fail; the catalogue stays reachable and simply refreshes
+      advance(TTL_MS);
+      expect(await repository.getImage(1)).toEqual({ contentType: 'image/png', data: PNG_BYTES });
+      expect(imageCalls()).toHaveLength(2);
+
+      advance(BACKOFF_MS - 1);
+      expect(await repository.getImage(1)).toEqual({ contentType: 'image/png', data: PNG_BYTES });
+      expect(imageCalls()).toHaveLength(2);
+
+      advance(1);
+      await repository.getImage(1);
+      expect(imageCalls()).toHaveLength(3);
+      expect(logger.withMessage('image.stale_served')).toHaveLength(2);
     });
   });
 
   describe('image proxy guards (D-001)', () => {
     it('returns the image bytes and content type', async () => {
-      const { repository, fetch } = setup();
+      const { repository, imageCalls } = setup();
       const image = await repository.getImage(1);
 
       expect(image).toEqual({ contentType: 'image/png', data: PNG_BYTES });
-      const [url, init] = imageCalls(fetch)[0] ?? [];
+      const [url, init] = imageCalls()[0] ?? [];
       expect(url?.toString()).toBe('https://fakestoreapi.com/img/81fPKd-2AYL._AC_SL1500_t.png');
       expect(init?.redirect).toBe('error');
     });
 
     it('returns undefined for an unknown product without fetching', async () => {
-      const { repository, fetch } = setup();
+      const { repository, imageCalls } = setup();
       expect(await repository.getImage(999)).toBeUndefined();
-      expect(imageCalls(fetch)).toHaveLength(0);
+      expect(imageCalls()).toHaveLength(0);
     });
 
     it('host not in the allowlist: rejected without making a request', async () => {
-      const { repository, fetch } = setup({ imageHostAllowlist: ['images.example.test'] });
+      const { repository, imageCalls } = setup({ imageHostAllowlist: ['images.example.test'] });
       await expect(repository.getImage(1)).rejects.toThrow('not in the allowlist');
-      expect(imageCalls(fetch)).toHaveLength(0);
+      expect(imageCalls()).toHaveLength(0);
     });
 
     it('redirect: rejected', async () => {
@@ -247,11 +259,20 @@ describe('FakeStoreProductRepository (§5.6)', () => {
       await expect(repository.getImage(1)).rejects.toThrow('Image request failed');
     });
 
-    it('non-image content type: rejected', async () => {
-      const { repository } = setup({
-        image: () => new Response('<script>', { headers: { 'content-type': 'text/html' } }),
-      });
-      await expect(repository.getImage(1)).rejects.toThrow('non-image content type');
+    it.each([
+      ['image/jpeg', 'image/jpeg'],
+      ['image/png', 'image/png'],
+      ['image/webp', 'image/webp'],
+      ['image/gif', 'image/gif'],
+      ['IMAGE/JPEG; charset=binary', 'image/jpeg'],
+    ])('allowed type %s: passed through as %s', async (header, normalised) => {
+      const { repository } = setup({ image: () => imageResponse(header) });
+      expect((await repository.getImage(1))?.contentType).toBe(normalised);
+    });
+
+    it.each(['image/svg+xml', 'image/x-icon', 'text/html', ''])('disallowed type "%s": rejected', async (type) => {
+      const { repository } = setup({ image: () => imageResponse(type, '<svg onload="alert(1)"/>') });
+      await expect(repository.getImage(1)).rejects.toThrow('disallowed content type');
     });
 
     it('too large by Content-Length: rejected', async () => {
@@ -280,10 +301,3 @@ describe('FakeStoreProductRepository (§5.6)', () => {
     });
   });
 });
-
-function firstFixtureProduct(): Record<string, unknown> {
-  if (!Array.isArray(productsFixture) || typeof productsFixture[0] !== 'object' || productsFixture[0] === null) {
-    throw new Error('Fixture is not an array of products');
-  }
-  return { ...(productsFixture[0] as Record<string, unknown>) };
-}

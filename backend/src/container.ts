@@ -24,6 +24,7 @@ export function createContainer(config: Config): Container {
   const cacheTiming = {
     ttlMs: config.productApi.cacheTtlSeconds * 1000,
     maxStaleAgeMs: config.productApi.staleMaxAgeSeconds * 1000,
+    retryBackoffMs: config.productApi.retryBackoffSeconds * 1000,
     now,
   };
 

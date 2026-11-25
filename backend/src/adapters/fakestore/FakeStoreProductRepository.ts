@@ -8,6 +8,9 @@ import { type FakeStoreProduct, fakeStoreProductsSchema } from './schema.js';
 /** Fake Store prices carry no currency; they are USD (D-020). */
 const FAKE_STORE_CURRENCY = 'USD';
 
+/** Raster types the app can render. SVG is excluded because it can carry scripts (D-001). */
+const ALLOWED_IMAGE_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
 export type FetchFn = (url: URL, init: RequestInit) => Promise<Response>;
 
 /** One loaded copy of the catalogue. `products` keeps its identity until the next refetch. */
@@ -69,8 +72,9 @@ export class FakeStoreProductRepository implements ProductRepository {
     return result.value;
   }
 
+  /** Warns once per failed refresh; stale copies served inside the back-off window are not re-logged. */
   private logIfStale(event: string, result: CacheResult<unknown>, context: Record<string, unknown> = {}): void {
-    if (!result.stale) return;
+    if (!result.stale || !result.refreshAttempted) return;
     this.options.logger.warn(event, {
       ...context,
       ageSeconds: Math.round(result.ageMs / 1000),
@@ -129,10 +133,10 @@ export class FakeStoreProductRepository implements ProductRepository {
       throw new UpstreamError(`Image source responded with HTTP ${response.status}`);
     }
 
-    const contentType = response.headers.get('content-type') ?? '';
-    if (!/^image\//i.test(contentType)) {
+    const contentType = mediaType(response.headers.get('content-type'));
+    if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
       await discardBody(response);
-      throw new UpstreamError(`Image source returned non-image content type "${contentType}"`);
+      throw new UpstreamError(`Image source returned disallowed content type "${contentType}"`);
     }
 
     const declaredLength = Number(response.headers.get('content-length'));
@@ -213,6 +217,11 @@ async function discardBody(response: Response): Promise<void> {
   } catch {
     // Nothing useful to do; the response is being rejected anyway.
   }
+}
+
+/** "Image/PNG; charset=binary" → "image/png". */
+function mediaType(header: string | null): string {
+  return (header ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
 }
 
 function withTrailingSlash(baseUrl: string): string {
