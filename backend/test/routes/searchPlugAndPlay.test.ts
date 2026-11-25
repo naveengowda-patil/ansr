@@ -1,63 +1,87 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { InMemorySearchEngine } from '../../src/adapters/search/InMemorySearchEngine.js';
-import type { FilterName, SortOption } from '../../src/domain/search.js';
+import { allCapabilities } from '../../src/domain/search.js';
 import { buildProduct, RecordingSearchEngine } from '../support/fakes.js';
 import { createTestApp } from '../support/testApp.js';
 
 /** Search is a swappable engine behind a capability contract (§5.7, D-008). */
 
-const catalogue = [1, 2, 3, 4].map((id) => buildProduct({ id }));
+const catalogue = [
+  buildProduct({ id: 1, title: 'Gold Ring', category: 'jewelery', price: 100 }),
+  buildProduct({ id: 2, title: 'Laptop Bag', category: "men's clothing", price: 50 }),
+  buildProduct({ id: 3, title: 'Silver Ring', category: 'jewelery', price: 20 }),
+  buildProduct({ id: 4, title: 'SSD Drive', category: 'electronics', price: 80 }),
+];
+const ids = (items: { id: number }[]) => items.map((item) => item.id);
 
-function limitedEngine() {
-  return new InMemorySearchEngine({
-    name: 'limited-in-memory',
-    capabilities: {
-      filters: new Set<FilterName>(['q', 'category']),
-      sorts: new Set<SortOption>(['relevance']),
-    },
-  });
+/** The running app's engine: new InMemorySearchEngine() is text search only. */
+function runningAppSearch() {
+  return createTestApp({ products: catalogue, searchEngine: new InMemorySearchEngine() });
 }
 
-describe('unsupported search params, real InMemorySearchEngine with limited capabilities', () => {
-  it('rejects an unsupported filter with 400 naming it, and logs a warning', async () => {
-    const { app, logger } = createTestApp({ products: catalogue, searchEngine: limitedEngine() });
-    const response = await request(app).get('/products').query({ q: 'ring', minPrice: '10' });
+describe('the running app does text search only (default InMemorySearchEngine)', () => {
+  it.each([
+    ['category', 'jewelery', "Filter 'category' is not supported yet."],
+    ['minPrice', '10', "Filter 'minPrice' is not supported yet."],
+    ['maxPrice', '90', "Filter 'maxPrice' is not supported yet."],
+    ['minRating', '4', "Filter 'minRating' is not supported yet."],
+    ['sort', 'rating_desc', "Sort 'rating_desc' is not supported yet."],
+    ['sort', 'price_asc', "Sort 'price_asc' is not supported yet."],
+    ['sort', 'price_desc', "Sort 'price_desc' is not supported yet."],
+    ['sort', 'title_asc', "Sort 'title_asc' is not supported yet."],
+  ])('rejects %s=%s with 400 naming it, and logs a warning', async (param, value, message) => {
+    const { app, logger } = runningAppSearch();
+    const response = await request(app).get('/products').query({ q: 'ring', [param]: value });
 
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({
-      error: { code: 'VALIDATION_ERROR', message: "Filter 'minPrice' is not supported yet." },
-    });
+    expect(response.body).toEqual({ error: { code: 'VALIDATION_ERROR', message } });
     expect(logger.withMessage('search.unsupported')).toEqual([
-      {
-        level: 'warn',
-        message: 'search.unsupported',
-        context: { param: 'minPrice', value: '10', engine: 'limited-in-memory' },
-      },
+      { level: 'warn', message: 'search.unsupported', context: { param, value, engine: 'in-memory' } },
     ]);
   });
 
-  it('rejects an unsupported sort with 400 naming it, and logs a warning', async () => {
-    const { app, logger } = createTestApp({ products: catalogue, searchEngine: limitedEngine() });
-    const response = await request(app).get('/products').query({ sort: 'price_asc' });
+  it('names every unsupported param in one response', async () => {
+    const { app, logger } = runningAppSearch();
+    const response = await request(app).get('/products').query({ category: 'jewelery', sort: 'price_asc' });
 
     expect(response.status).toBe(400);
-    expect(response.body.error.message).toBe("Sort 'price_asc' is not supported yet.");
-    expect(logger.withMessage('search.unsupported')).toEqual([
-      {
-        level: 'warn',
-        message: 'search.unsupported',
-        context: { param: 'sort', value: 'price_asc', engine: 'limited-in-memory' },
-      },
-    ]);
+    expect(response.body.error.message).toBe(
+      "Filter 'category' is not supported yet. Sort 'price_asc' is not supported yet.",
+    );
+    expect(logger.withMessage('search.unsupported')).toHaveLength(2);
   });
 
-  it('still serves supported params', async () => {
-    const { app, logger } = createTestApp({ products: catalogue, searchEngine: limitedEngine() });
-    const response = await request(app).get('/products').query({ q: 'product 2' });
+  it('serves q, sort=relevance and paging', async () => {
+    const { app, logger } = runningAppSearch();
+    const response = await request(app)
+      .get('/products')
+      .query({ q: 'ring', sort: 'relevance', page: '2', pageSize: '1' });
 
     expect(response.status).toBe(200);
-    expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([2]);
+    expect(response.body).toMatchObject({ total: 2, page: 2, pageSize: 1 });
+    expect(ids(response.body.items)).toEqual([3]);
+    expect(logger.withMessage('search.unsupported')).toEqual([]);
+  });
+
+  it('still validates the shape of params it does not support', async () => {
+    const { app, logger } = runningAppSearch();
+    const response = await request(app).get('/products').query({ minPrice: 'ten' });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.message).toContain('minPrice');
+    expect(logger.withMessage('search.unsupported')).toEqual([]);
+  });
+});
+
+describe('additional filters and sorts (built and unit-tested, not enabled in the running app)', () => {
+  it('are served by the same real engine when it is created with allCapabilities()', async () => {
+    const searchEngine = new InMemorySearchEngine({ capabilities: allCapabilities() });
+    const { app, logger } = createTestApp({ products: catalogue, searchEngine });
+    const response = await request(app).get('/products').query({ category: 'JEWELERY', sort: 'price_asc' });
+
+    expect(response.status).toBe(200);
+    expect(ids(response.body.items)).toEqual([3, 1]);
     expect(logger.withMessage('search.unsupported')).toEqual([]);
   });
 });

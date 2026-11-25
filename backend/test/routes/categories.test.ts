@@ -60,8 +60,29 @@ describe('GET /categories/:category (AC-2, §6.8, D-004)', () => {
     expect(response.body).toEqual({ error: { code: 'NOT_FOUND', message: 'Category not found.' } });
   });
 
-  it('matches the category exactly (case-sensitive)', async () => {
+  it.each(['JEWELERY', 'Jewelery', 'jewelery'])(
+    'matches %s case-insensitively and returns the name as the data spells it',
+    async (requested) => {
+      const { app } = createTestApp({ products: catalogue });
+      const response = await request(app).get(`/categories/${requested}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.category).toBe('jewelery');
+      expect(ids(response.body.topRated)).toEqual([2]);
+    },
+  );
+
+  it('matches a multi-word category case-insensitively', async () => {
     const { app } = createTestApp({ products: catalogue });
-    expect((await request(app).get('/categories/Jewelery')).status).toBe(404);
+    const response = await request(app).get(`/categories/${encodeURIComponent("MEN'S CLOTHING")}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.category).toBe(mens);
+    expect(ids(response.body.topRated)).toEqual([6, 3, 5]);
+  });
+
+  it('does not match a partial category name', async () => {
+    const { app } = createTestApp({ products: catalogue });
+    expect((await request(app).get('/categories/jewel')).status).toBe(404);
   });
 });

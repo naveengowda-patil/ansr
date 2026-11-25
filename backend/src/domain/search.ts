@@ -25,7 +25,18 @@ export interface SearchCapabilities {
   readonly sorts: ReadonlySet<SortOption>;
 }
 
-/** Every filter and sort. Paging is always supported and not listed. */
+/**
+ * What the running app supports (D-008): text search (`q`) in upstream order.
+ * Paging is always supported and not listed.
+ */
+export function textSearchOnly(): SearchCapabilities {
+  return { filters: new Set<FilterName>(['q']), sorts: new Set<SortOption>(['relevance']) };
+}
+
+/**
+ * Every filter and sort, including the additional ones that are built and
+ * unit-tested but not enabled in the running app (D-008).
+ */
 export function allCapabilities(): SearchCapabilities {
   return { filters: new Set(FILTER_NAMES), sorts: new Set(SORT_OPTIONS) };
 }
@@ -72,17 +83,30 @@ export function matchesText(product: Product, q: string): boolean {
   );
 }
 
-/** Every filter present in the query must hold (AND). Price bounds are inclusive. */
+/** Category names compare case-insensitively everywhere (D-004). */
+export function sameCategory(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Every filter present in the query must hold (AND). Price bounds are inclusive.
+ * `q` is enabled in the running app. `category`, `minPrice`, `maxPrice` and `minRating`
+ * are additional: built and unit-tested, not enabled in the running app (D-008).
+ */
 export function matchesFilters(product: Product, query: SearchQuery): boolean {
   if (query.q !== undefined && !matchesText(product, query.q)) return false;
-  if (query.category !== undefined && product.category !== query.category) return false;
+  if (query.category !== undefined && !sameCategory(product.category, query.category)) return false;
   if (query.minPrice !== undefined && product.price < query.minPrice) return false;
   if (query.maxPrice !== undefined && product.price > query.maxPrice) return false;
   if (query.minRating !== undefined && product.rating.rate < query.minRating) return false;
   return true;
 }
 
-/** Comparator for a sort option. `relevance` keeps the input order (Array.prototype.sort is stable). */
+/**
+ * Comparator for a sort option. `relevance` keeps the input order (Array.prototype.sort is
+ * stable) and is enabled in the running app. `rating_desc`, `price_asc`, `price_desc` and
+ * `title_asc` are additional: built and unit-tested, not enabled in the running app (D-008).
+ */
 export function compareForSort(sort: SortOption): (a: Product, b: Product) => number {
   switch (sort) {
     case 'relevance':

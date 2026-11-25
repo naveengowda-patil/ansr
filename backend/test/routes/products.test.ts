@@ -1,5 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import { InMemorySearchEngine } from '../../src/adapters/search/InMemorySearchEngine.js';
+import { allCapabilities } from '../../src/domain/search.js';
 import { UpstreamError } from '../../src/errors.js';
 import {
   createFakeStoreRepository,
@@ -90,8 +92,9 @@ describe('GET /products (AC-3, §6.4)', () => {
     expect(response.body).toEqual({ items: [], total: 0, page: 1, pageSize: 20 });
   });
 
-  it('applies filters, sort and paging', async () => {
-    const { app } = createTestApp({ products: catalogue });
+  it('applies the additional filters and sorts when the engine has allCapabilities() (not the running app)', async () => {
+    const searchEngine = new InMemorySearchEngine({ capabilities: allCapabilities() });
+    const { app } = createTestApp({ products: catalogue, searchEngine });
     const response = await request(app)
       .get('/products')
       .query({ category: 'jewelery', sort: 'rating_desc', page: 1, pageSize: 1 });

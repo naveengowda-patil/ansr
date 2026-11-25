@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { InMemorySearchEngine } from '../../src/adapters/search/InMemorySearchEngine.js';
-import { FILTER_NAMES, type SearchQuery, SORT_OPTIONS } from '../../src/domain/search.js';
+import {
+  allCapabilities,
+  FILTER_NAMES,
+  type SearchQuery,
+  SORT_OPTIONS,
+  textSearchOnly,
+} from '../../src/domain/search.js';
 import { buildProduct } from '../support/fakes.js';
 
 const catalogue = [
@@ -16,18 +22,29 @@ const query = (overrides: Partial<SearchQuery> = {}): SearchQuery => ({
   ...overrides,
 });
 
+/**
+ * The filter and sort tests below use allCapabilities(): those filters and sorts are
+ * additional, built and unit-tested, not enabled in the running app (D-008).
+ */
 async function indexedEngine() {
-  const engine = new InMemorySearchEngine();
+  const engine = new InMemorySearchEngine({ capabilities: allCapabilities() });
   await engine.index(catalogue);
   return engine;
 }
 
 describe('InMemorySearchEngine (§5.7)', () => {
-  it('supports every filter and sort by default', () => {
+  it('does text search only by default: q and relevance, nothing extra', () => {
     const engine = new InMemorySearchEngine();
+    expect([...engine.capabilities.filters]).toEqual(['q']);
+    expect([...engine.capabilities.sorts]).toEqual(['relevance']);
+    expect(engine.capabilities).toEqual(textSearchOnly());
+    expect(engine.name).toBe('in-memory');
+  });
+
+  it('enables every filter and sort only when given allCapabilities()', () => {
+    const engine = new InMemorySearchEngine({ capabilities: allCapabilities() });
     expect([...engine.capabilities.filters]).toEqual([...FILTER_NAMES]);
     expect([...engine.capabilities.sorts]).toEqual([...SORT_OPTIONS]);
-    expect(engine.name).toBe('in-memory');
   });
 
   it('accepts injected capabilities and name', () => {
@@ -53,6 +70,12 @@ describe('InMemorySearchEngine (§5.7)', () => {
     expect((await engine.search(query({ minPrice: 50, maxPrice: 80 }))).ids).toEqual([2, 4]);
     expect((await engine.search(query({ minRating: 4 }))).ids).toEqual([1, 3]);
     expect((await engine.search(query({ category: 'jewelery', maxPrice: 50 }))).ids).toEqual([3]);
+  });
+
+  it('matches the category filter case-insensitively', async () => {
+    const engine = await indexedEngine();
+    expect((await engine.search(query({ category: 'JEWELERY' }))).ids).toEqual([1, 3]);
+    expect((await engine.search(query({ category: "Men's Clothing" }))).ids).toEqual([2]);
   });
 
   it('returns an empty result for an unknown category', async () => {

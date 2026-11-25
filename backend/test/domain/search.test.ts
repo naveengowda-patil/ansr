@@ -7,8 +7,10 @@ import {
   matchesFilters,
   matchesText,
   paginate,
+  sameCategory,
   type SearchQuery,
   type SortOption,
+  textSearchOnly,
 } from '../../src/domain/search.js';
 import { buildProduct } from '../support/fakes.js';
 
@@ -50,9 +52,10 @@ describe('matchesFilters (§5.5)', () => {
     expect(matchesFilters(product, baseQuery)).toBe(true);
   });
 
-  it('matches category exactly', () => {
+  it('matches category case-insensitively (additional filter)', () => {
     expect(matchesFilters(product, { ...baseQuery, category: 'jewelery' })).toBe(true);
-    expect(matchesFilters(product, { ...baseQuery, category: 'Jewelery' })).toBe(false);
+    expect(matchesFilters(product, { ...baseQuery, category: 'JEWELERY' })).toBe(true);
+    expect(matchesFilters(product, { ...baseQuery, category: 'jewel' })).toBe(false);
   });
 
   it('treats price bounds as inclusive', () => {
@@ -84,6 +87,40 @@ describe('compareForSort (§5.5)', () => {
   it('price_asc breaks ties by id', () => expect(sorted('price_asc')).toEqual([2, 3, 1]));
   it('price_desc breaks ties by id', () => expect(sorted('price_desc')).toEqual([1, 2, 3]));
   it('title_asc ignores case', () => expect(sorted('title_asc')).toEqual([2, 1, 3]));
+});
+
+describe('sameCategory (D-004)', () => {
+  it('compares category names case-insensitively', () => {
+    expect(sameCategory("men's clothing", "MEN'S Clothing")).toBe(true);
+    expect(sameCategory('jewelery', 'jewelry')).toBe(false);
+  });
+});
+
+describe('capability sets (§5.5, D-008)', () => {
+  it('textSearchOnly() enables q and relevance only', () => {
+    const capabilities = textSearchOnly();
+    expect([...capabilities.filters]).toEqual(['q']);
+    expect([...capabilities.sorts]).toEqual(['relevance']);
+  });
+
+  it('textSearchOnly() rejects every additional filter and sort', () => {
+    const query: SearchQuery = {
+      ...baseQuery,
+      q: 'ring',
+      category: 'jewelery',
+      minPrice: 1,
+      maxPrice: 2,
+      minRating: 3,
+      sort: 'title_asc',
+    };
+    expect(findUnsupported(query, textSearchOnly()).map((item) => item.param)).toEqual([
+      'category',
+      'minPrice',
+      'maxPrice',
+      'minRating',
+      'sort',
+    ]);
+  });
 });
 
 describe('findUnsupported (§5.7, D-008)', () => {

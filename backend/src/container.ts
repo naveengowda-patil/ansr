@@ -8,6 +8,7 @@ import { JsonLogger } from './adapters/logging/JsonLogger.js';
 import { InMemorySearchEngine } from './adapters/search/InMemorySearchEngine.js';
 import type { AppDeps } from './app.js';
 import type { Config } from './config.js';
+import { textSearchOnly } from './domain/search.js';
 import { TtlCache } from './lib/TtlCache.js';
 import type { ProductImage } from './ports/ProductRepository.js';
 
@@ -50,7 +51,9 @@ export function createContainer(config: Config): Container {
   return {
     deps: {
       productRepository,
-      searchEngine: new InMemorySearchEngine(),
+      // The running app does text search only (D-008). Pass allCapabilities() to enable the
+      // additional filters and sorts, which are built and unit-tested.
+      searchEngine: new InMemorySearchEngine({ capabilities: textSearchOnly() }),
       emailService: new SmtpEmailService(transport),
       logger,
       settings: {
