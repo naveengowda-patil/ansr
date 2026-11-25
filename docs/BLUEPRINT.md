@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.3, reviewed |
+| Status | v0.4, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -105,6 +105,7 @@ backend/
 │   │   └── Logger.ts
 │   ├── domain/              # pure business rules, no I/O
 │   │   ├── product.ts           # Product, Rating types
+│   │   ├── email.ts             # EmailMessage type (provider-agnostic)
 │   │   ├── ranking.ts           # compareByRating (tie-break)
 │   │   ├── featured.ts          # selectFeatured
 │   │   ├── categoryRanking.ts   # splitTopRated
@@ -114,7 +115,8 @@ backend/
 │   │   ├── health.ts  products.ts  categories.ts  enquiries.ts
 │   ├── http/
 │   │   ├── errorHandler.ts      # the single error middleware (§5.9)
-│   │   └── validate.ts          # zod parse helpers → ValidationError
+│   │   ├── params.ts            # shared zod schemas for path/query params
+│   │   └── validate.ts          # zod parse helpers → ValidationError (rejects repeated query params)
 │   ├── adapters/
 │   │   ├── fakestore/           # FakeStoreProductRepository + upstream zod schemas
 │   │   ├── search/              # InMemorySearchEngine
@@ -248,7 +250,7 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
   3. **Timeout:** `AbortSignal.timeout(IMAGE_TIMEOUT_MS)`.
   4. **Content type:** only `image/*` responses are passed through.
   5. **Max size:** rejected if `Content-Length` exceeds `IMAGE_MAX_BYTES`. Reading the body also stops once it passes the limit, which covers a missing or wrong `Content-Length`.
-  - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`) with the same TTL and stale fallback as the catalogue.
+  - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`, least recently used evicted) with the same TTL and stale fallback as the catalogue. A stale image is logged as `image.stale_served`.
   - The route sets cache headers on the response (§6.6).
 
 ### 5.7 Search design
@@ -270,7 +272,7 @@ Two responsibilities, two ports:
 6. Respond `{ items, total, page, pageSize }`.
 
 **`InMemorySearchEngine`:**
-- Constructor: `new InMemorySearchEngine({ name = 'in-memory', capabilities = ALL_CAPABILITIES })`. The container uses the defaults, so every filter and sort is supported. Tests can pass fewer capabilities to exercise the 400 path with the real engine.
+- Constructor: `new InMemorySearchEngine({ name = 'in-memory', capabilities = allCapabilities() })`. The container uses the defaults, so every filter and sort is supported. Tests can pass fewer capabilities to exercise the 400 path with the real engine.
 - Applies `matchesFilters` and `compareForSort` (§5.5), then pages. An unknown category used as a filter gives an empty result, not a 404.
 
 Category "top rated" stays a domain function (`splitTopRated`), not engine sorting.
@@ -713,3 +715,4 @@ None open.
 | 0.1 | 2026-11-25 | Initial blueprint: requirements, architecture, API contract, iOS design, config, tests, delivery flow. Project-specific rules moved here from `CLAUDE.md`. |
 | 0.2 | 2026-11-25 | Review changes: search also matches category; `InMemorySearchEngine` supports all filters/sorts, with capabilities injected through its constructor and unsupported params logged as warnings; catalogue cache serves a stale copy when a refetch fails; image proxy guards (`IMAGE_HOST_ALLOWLIST`, `IMAGE_TIMEOUT_MS`, no redirects, `nosniff`); iOS 18 minimum / Xcode 16+; README contents (§8.4); open questions resolved; Tuist future note. |
 | 0.3 | 2026-11-25 | Stale copies served for at most 24 h (`PRODUCT_STALE_MAX_AGE_SECONDS`). `errors.ts` moved to `src/` because adapters throw these errors too. Caches are created in the container and injected. `TtlCache` tests listed. Docker-only backend test command. |
+| 0.4 | 2026-11-25 | Backend implementation sync. The structure gains `domain/email.ts` and `http/params.ts`. The engine's default capabilities come from `allCapabilities()`, a function, so no shared mutable set exists. Stale images are logged as `image.stale_served`. |
