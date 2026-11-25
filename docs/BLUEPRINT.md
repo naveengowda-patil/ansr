@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.4, backend implemented |
+| Status | v0.5, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -125,8 +125,8 @@ backend/
 │   └── lib/
 │       └── TtlCache.ts          # TTL cache: single-flight refetch, stale fallback on error, injected clock
 ├── test/
-│   ├── fixtures/fakestore/      # recorded upstream responses (JSON, images)
-│   ├── mocks/                   # in-memory fakes for the ports
+│   ├── fixtures/fakestore/      # products.json, recorded from GET /products (image tests use inline bytes)
+│   ├── support/                 # fakes.ts (in-memory port fakes, buildProduct) + testApp.ts (createApp wired with fakes)
 │   └── *.test.ts
 ├── Dockerfile  package.json  tsconfig.json  .nvmrc
 ```
@@ -214,7 +214,12 @@ interface EmailMessage {
 interface EmailService { send(message: EmailMessage): Promise<void> }  // throws on failure
 
 // ports/Logger.ts
-interface Logger { info(msg: string, ctx?: Record<string, unknown>): void; warn(...): void; error(...): void }
+interface Logger {
+  debug(message: string, context?: LogContext): void;
+  info(message: string, context?: LogContext): void;
+  warn(message: string, context?: LogContext): void;
+  error(message: string, context?: LogContext): void;
+}
 ```
 
 Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `undefined`, never an exception.
@@ -232,7 +237,11 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
 
 ### 5.6 Fake Store adapter (`FakeStoreProductRepository`)
 
-- Receives through its constructor: `fetch` function, `baseUrl`, `timeoutMs`, `cacheTtlMs`, image cache limits, a clock, and a `Logger`.
+- Receives through its constructor:
+  - `fetch`, `baseUrl` and `timeoutMs`
+  - `imageHostAllowlist`, `imageTimeoutMs` and `imageMaxBytes`
+  - two `TtlCache` instances, `catalogueCache` and `imageCache`, created in `container.ts`, which owns the TTL, stale cap, size bound and clock
+  - a `Logger`
 - **One upstream call for data:** `GET {baseUrl}/products` loads the whole catalogue (≈20 items). `getById`, `getByIds` and `listCategories` are derived from that cached snapshot (categories = distinct values in first-seen order).
 - **Timeout:** every catalogue request uses `AbortSignal.timeout(PRODUCT_API_TIMEOUT_MS)` (images have their own, below).
 - **Cache with stale fallback** (D-011): the catalogue snapshot is held in a `TtlCache`.
@@ -288,6 +297,9 @@ Swapping engines (e.g. OpenSearch) = a new adapter implementing `ProductSearchEn
 - Plain text body: product id and title, customer name, customer email, message (or "(no message)"), received timestamp (ISO 8601, UTC). Never HTML.
 - Sending is synchronous; failure → 502 `UPSTREAM_ERROR`. No queueing or retries.
 - Logs record the product id and outcome only, not the customer's name, email or message.
+- `SmtpEmailService` depends on a narrow `MailTransport` interface (`sendMail` only), not on nodemailer types.
+  - The nodemailer transport is created in `container.ts`.
+  - Tests use nodemailer's stream transport (no SMTP server) or a stub transport.
 
 ### 5.9 Errors
 
@@ -308,29 +320,34 @@ The single error middleware maps `AppError` subclasses to the table, maps anythi
 
 ### 5.10 Configuration
 
-Read and validated only in `src/config.ts`; the app fails fast at startup on invalid config. All variables live in the root `.env.example` with safe defaults.
+Read and validated only in `src/config.ts`. The app fails fast at startup on invalid config and lists every problem. All variables are in the root `.env.example` with safe local values.
 
-| Variable | Example / default | Notes |
-|---|---|---|
-| `PORT` | `3000` | |
-| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
-| `PRODUCT_API_BASE_URL` | `https://fakestoreapi.com` | |
-| `PRODUCT_API_TIMEOUT_MS` | `5000` | Per catalogue request |
-| `PRODUCT_CACHE_TTL_SECONDS` | `300` | Catalogue snapshot + image cache TTL; stale copy served if refetch fails |
-| `PRODUCT_STALE_MAX_AGE_SECONDS` | `86400` | Oldest copy (catalogue or image) that may be served when a refetch fails |
-| `IMAGE_HOST_ALLOWLIST` | `fakestoreapi.com` | Comma-separated hostnames, exact match |
-| `IMAGE_TIMEOUT_MS` | `5000` | Per image request |
-| `IMAGE_CACHE_MAX_ENTRIES` | `100` | Bounded image cache |
-| `IMAGE_MAX_BYTES` | `5242880` | 5 MB |
-| `IMAGE_CLIENT_MAX_AGE_SECONDS` | `86400` | `Cache-Control` on image responses |
-| `FEATURED_PRODUCT_IDS` | `1,5,9,13,17` | Ordered, comma-separated positive integers |
-| `SMTP_HOST` | `mailpit` | `localhost` when running the API outside Docker |
-| `SMTP_PORT` | `1025` | |
-| `SMTP_SECURE` | `false` | |
-| `SMTP_USER` / `SMTP_PASS` | empty | Optional; empty = no auth (Mailpit) |
-| `MAIL_FROM` | `catalogue@example.com` | |
-| `SALES_INBOX_EMAIL` | `sales@example.com` | |
-| `JSON_BODY_LIMIT` | `10kb` | |
+Every variable is one of three kinds:
+- **Required:** environment-specific (URLs, hosts, addresses, ids). There is no default in code, so the app won't start without it.
+- **Default:** a tuning value. `config.ts` holds the default, and `.env.example` repeats it.
+- **Optional:** may be left empty.
+
+| Variable | Kind | Default / `.env.example` value | Notes |
+|---|---|---|---|
+| `PORT` | Default | `3000` | |
+| `LOG_LEVEL` | Default | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `PRODUCT_API_BASE_URL` | **Required** | `https://fakestoreapi.com` | `http`/`https` URL |
+| `PRODUCT_API_TIMEOUT_MS` | Default | `5000` | Per catalogue request |
+| `PRODUCT_CACHE_TTL_SECONDS` | Default | `300` | Catalogue snapshot + image cache TTL; stale copy served if refetch fails |
+| `PRODUCT_STALE_MAX_AGE_SECONDS` | Default | `86400` | Oldest copy (catalogue or image) that may be served when a refetch fails |
+| `IMAGE_HOST_ALLOWLIST` | **Required** | `fakestoreapi.com` | Comma-separated hostnames, exact match; at least one |
+| `IMAGE_TIMEOUT_MS` | Default | `5000` | Per image request |
+| `IMAGE_CACHE_MAX_ENTRIES` | Default | `100` | Bounded image cache |
+| `IMAGE_MAX_BYTES` | Default | `5242880` | 5 MB |
+| `IMAGE_CLIENT_MAX_AGE_SECONDS` | Default | `86400` | `Cache-Control` on image responses |
+| `FEATURED_PRODUCT_IDS` | **Required** | `1,5,9,13,17` | Ordered, comma-separated positive integers. Must be set; may be empty (Home is then filled by rating). |
+| `SMTP_HOST` | **Required** | `mailpit` | `localhost` when running the API outside Docker |
+| `SMTP_PORT` | **Required** | `1025` | |
+| `SMTP_SECURE` | Default | `false` | `true` \| `false` |
+| `SMTP_USER` / `SMTP_PASS` | Optional | empty | Empty = no auth (Mailpit) |
+| `MAIL_FROM` | **Required** | `catalogue@example.com` | Valid email address |
+| `SALES_INBOX_EMAIL` | **Required** | `sales@example.com` | Valid email address |
+| `JSON_BODY_LIMIT` | Default | `10kb` | |
 
 ---
 
@@ -716,3 +733,4 @@ None open.
 | 0.2 | 2026-11-25 | Review changes: search also matches category; `InMemorySearchEngine` supports all filters/sorts, with capabilities injected through its constructor and unsupported params logged as warnings; catalogue cache serves a stale copy when a refetch fails; image proxy guards (`IMAGE_HOST_ALLOWLIST`, `IMAGE_TIMEOUT_MS`, no redirects, `nosniff`); iOS 18 minimum / Xcode 16+; README contents (§8.4); open questions resolved; Tuist future note. |
 | 0.3 | 2026-11-25 | Stale copies served for at most 24 h (`PRODUCT_STALE_MAX_AGE_SECONDS`). `errors.ts` moved to `src/` because adapters throw these errors too. Caches are created in the container and injected. `TtlCache` tests listed. Docker-only backend test command. |
 | 0.4 | 2026-11-25 | Backend implementation sync. The structure gains `domain/email.ts` and `http/params.ts`. The engine's default capabilities come from `allCapabilities()`, a function, so no shared mutable set exists. Stale images are logged as `image.stale_served`. |
+| 0.5 | 2026-11-25 | Drift fixes found in review (text only): `Logger` includes `debug`; the repository receives two `TtlCache` instances rather than a clock and limits; `SmtpEmailService` depends on a narrow `MailTransport`; test helpers live in `test/support/` and the only fixture is `products.json`; §5.10 marks each variable as required, default or optional. |
