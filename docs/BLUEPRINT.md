@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.8, backend implemented |
+| Status | v0.9, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -765,6 +765,7 @@ None open.
 ## 12. Future (not in scope)
 
 - **Tuist for the iOS project:** generate the project from a Swift manifest, so there are no `.xcodeproj` merge conflicts, and split it into modules (`Core`, `Networking`, `DesignSystem`, `Features`).
+- **Cursor-based paging for search:** today paging is offset-based (`page`, `pageSize`), so items can shift between pages if the catalogue refreshes mid-browse. A cursor (for example, the last item's sort key and id) keeps pages stable.
 - See `DECISIONS.md` → "What I'd do next" and "How it grows".
 
 ---
@@ -781,3 +782,4 @@ None open.
 | 0.6 | 2026-11-25 | Review changes: retry back-off after a failed refresh (`CACHE_RETRY_BACKOFF_SECONDS`, default 30); images limited to JPEG, PNG, WebP and GIF (SVG rejected); all-or-nothing catalogue validation documented (D-028); `GET /products` absent vs present-but-empty params (§6.4); iOS `Endpoints` never sends empty values, and search is disabled while the trimmed text is empty (§7.5, §7.8). |
 | 0.7 | 2026-11-25 | Cache switched to stale-while-revalidate: after the TTL the copy is returned immediately and refreshed in the background (one per key, errors always caught, back-off reused, 24 h cap still waits). `TtlCache.whenIdle()` for tests. Log events renamed to `catalogue.refresh_failed` / `image.refresh_failed`. Startup catalogue warm-up in the new `src/startup.ts`. Tests table updated. |
 | 0.8 | 2026-11-25 | Search review. Category matching is case-insensitive everywhere (`sameCategory`; `/categories/JEWELERY` returns `jewelery`). Capabilities are explicit: `InMemorySearchEngine` defaults to `textSearchOnly()`, which `container.ts` passes explicitly. **The running app does text search only.** The other filters and sorts are labelled "additional, built and unit-tested, not enabled in the running app". §6.4 has a "running app" column. |
+| 0.9 | 2026-11-25 | §12 Future: cursor-based paging added next to Tuist. Docs only. |
