@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.19, backend implemented, iOS foundation built (phase 1) |
+| Status | v0.20, backend implemented, iOS foundation built (phase 1) |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -548,7 +548,7 @@ Why this stack: D-025. Why these settings: D-039.
 |---|---|
 | Project | `iOS/ANSR/ANSR.xcodeproj`, with synchronized folder groups (Xcode 16+), so files added to a folder are picked up without editing the project file. No project generator. |
 | Targets | `ANSR` (the app) and `ANSRTests` (unit tests). **No UI test target.** |
-| Deployment target | **iOS 18.0** (D-013), iPhone |
+| Deployment target | **iOS 18.0** (D-013), **iPhone only** (`TARGETED_DEVICE_FAMILY = 1` on both targets, no iPad orientation keys) |
 | Language | **Swift 6** language mode, strict concurrency checking `complete` |
 | Default actor isolation | **`nonisolated`**. UI types are marked `@MainActor` explicitly: views, view models, `AppCoordinator`, `AppBootstrapper` and the UIKit delegates. |
 | Approachable Concurrency | **Off** (`SWIFT_APPROACHABLE_CONCURRENCY = NO`), with no upcoming-feature flags. A `nonisolated` `async` function runs off the main actor, so JSON decoding and image work never run on the main actor by accident. |
@@ -1242,3 +1242,4 @@ None open.
 | 0.17 | 2026-11-26 | Drift fix (docs only): §5.2 describes `TtlCache.ts` as stale-while-revalidate with retry back-off and the 24 h cap, matching the code since v0.7. |
 | 0.18 | 2026-11-26 | iOS design (docs only). §7 rewritten:<br>• the project at `iOS/ANSR/ANSR.xcodeproj` with targets `ANSR` and `ANSRTests` (no UI tests), Swift 6 with default isolation `nonisolated` and Approachable Concurrency off, simulator only;<br>• the UIKit lifecycle hosting SwiftUI through `AppBootstrapper`;<br>• Debug and Prod configurations with shared schemes;<br>• dumb views and two model layers (data models and per-screen view data);<br>• repositories named by role and how (`ProductRepository` / `RemoteProductRepository`, and so on), replacing "services";<br>• `HybridImageProvider` (memory → disk → network);<br>• one navigator protocol per view model, with thin coordinator entry points;<br>• the Home, Category, Search results, Product detail and Enquiry screens;<br>• `ViewState` with no idle state;<br>• formatting, `Strings` and theme rules; accessibility out of scope.<br>The §7.8 screens table is fixed, and 7.10 Repositories and 7.11 Screen states are new. §1 out of scope, §4 overview and layout, §8.1, §8.2 and §8.4 iOS run and test steps, §9.2 requirement-linked iOS tests with a manual walkthrough on both schemes, §9.3 iOS column, and §12 iOS future items are all updated. Header links `FRONTEND_ARCHITECTURE.md`. D-030 to D-041. |
 | 0.19 | 2026-11-26 | iOS phase 1, the foundation. §7.1 says how `Info.plist` is wired (its own file merged with the generated one, the scene manifest naming `SceneDelegate`, the ATS local-networking exception in Debug only through Info.plist preprocessing, D-042) and how xcconfig URLs are written (`http:/$()/…`). Details settled while building: `CoordinatorView` (§7.4); per-segment path encoding, query encoding of `+&=?#/`, the encodable body and the status-and-code rule (§7.5); `ProductImageState`, `ImageProviderError.undecodableImage`, the 2 s write delay and the cancellable background subscription (§7.6); the configuration error names the bad key (§7.7, §7.11); `ProductTileViewData` lives in `Shared/` (§7.2, §7.3); the phase 1 placeholder Home (§7.8). |
+| 0.20 | 2026-11-26 | §7.1: iPhone only is now explicit (`TARGETED_DEVICE_FAMILY = 1` on both targets). The project had iPhone and iPad set, which contradicted §7.1; the project now matches. |
