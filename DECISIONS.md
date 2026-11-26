@@ -442,7 +442,7 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
   - Swipe-to-dismiss is blocked while submitting.
   - On failure, everything the user typed is kept and Submit is enabled again.
   - The thank-you text is "Thank you, {name}. Our sales team will reply to {email} soon.", and Done dismisses the sheet.
-  - Settled in phase 2.5: the client copies the backend's rules exactly, including zod's email pattern, control characters checked before trimming and UTF-16 lengths. A field shows its error only once it has been changed. A failure's message stays above the form until the next submit.
+  - Settled in phase 2.5: the client copies the backend's rules exactly, including zod's email pattern, control characters checked before trimming and lengths counted in Unicode code points, as zod counts them. A field shows its error only once it has been changed. A failure's message stays above the form until the next submit.
 - **Why:**
   - Checking on the client avoids a pointless round trip. The backend stays the final judge.
   - Blocking dismiss while submitting avoids an email being sent with no confirmation shown.

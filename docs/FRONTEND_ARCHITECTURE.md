@@ -260,7 +260,7 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 - **Files:** `ANSR/Features/Enquiry/`
 - **How it works:**
   - **Fields:** name, email and message live in the view model.
-    - Validation mirrors the backend exactly, as pure functions in `EnquiryValidation.swift`: the same limits, the same email pattern, control characters checked before trimming, lengths counted like JavaScript strings.
+    - Validation mirrors the backend exactly, as pure functions in `EnquiryValidation.swift`: the same limits, the same email pattern, control characters checked before trimming, lengths counted in code points as the backend's zod counts them.
     - Submit stays disabled until the form is valid.
     - A field shows its error only once the user has changed it.
   - **States:** editing → submitting → submitted (thank-you) or failed.
