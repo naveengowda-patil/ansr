@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// One product tile (BLUEPRINT §7.11): image state, title, price and rating. It reports its appearance so the
-/// view model can load the image (§7.6).
+/// One product tile (BLUEPRINT §7.11): image state, title, price and rating. It reports its appearance with `.task`,
+/// so the view model can load the image (§7.6) and the request is cancelled if the tile goes away first.
 struct ProductTileView: View {
     let data: ProductTileViewData
     let imageState: ProductImageState
-    let onAppear: () -> Void
+    let onAppear: () async -> Void
 
     @Environment(\.theme) private var theme
 
@@ -30,7 +30,7 @@ struct ProductTileView: View {
         .padding(theme.spacing.small)
         .background(theme.colors.secondaryBackground)
         .clipShape(RoundedRectangle(cornerRadius: theme.radii.tile))
-        .onAppear(perform: onAppear)
+        .task { await onAppear() }
     }
 
     @ViewBuilder

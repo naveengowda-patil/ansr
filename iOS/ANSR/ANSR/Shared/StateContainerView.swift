@@ -18,6 +18,7 @@ struct StateContainerView<Value, Content: View>: View {
             content(value)
         case .empty:
             message(emptyMessage)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .error(let text):
             VStack(spacing: theme.spacing.large) {
                 message(text)
@@ -33,8 +34,7 @@ struct StateContainerView<Value, Content: View>: View {
             .font(theme.fonts.body)
             .foregroundStyle(theme.colors.secondaryText)
             .multilineTextAlignment(.center)
-            .padding(theme.spacing.extraLarge)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, theme.spacing.extraLarge)
     }
 }
 
