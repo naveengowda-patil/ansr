@@ -90,6 +90,6 @@ final class HomeViewModel {
     }
 
     private var trimmedSearchText: String {
-        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        SearchTerm.normalized(searchText)
     }
 }

@@ -189,6 +189,13 @@ struct HomeViewModelTests {
         #expect(navigator.calls == [.searchResults(query: "ring")])
     }
 
+    @Test("Curly quotes from the keyboard are submitted as straight ones")
+    func curlyQuotesAreStraightened() {
+        viewModel.searchText = "men\u{2019}s \u{201C}slim\u{201D}"
+        viewModel.didSubmitSearch()
+        #expect(navigator.calls == [.searchResults(query: "men's \"slim\"")])
+    }
+
     @Test("A blank search does nothing", arguments: ["", "   ", "\n\t "])
     func blankSearchDoesNothing(text: String) {
         viewModel.searchText = text
