@@ -8,16 +8,19 @@ A proof of concept for a product catalogue: a SwiftUI iOS app and a Node.js + Ty
 
 ## Prerequisites
 
-- **Docker with Compose v2**, from Docker Desktop, OrbStack or Colima
+- **Docker with Compose 2.24 or newer**, from Docker Desktop, OrbStack or Colima (check with `docker compose version`)
 - **Xcode 16 or newer** for the iOS app (built with Xcode 26), plus an iOS 18+ simulator. Xcode 16 is the minimum because the iOS 18 deployment target and the project format need it.
 - *Optional:* Node.js 24 (see `backend/.nvmrc`), only if you want to run backend tests outside Docker
 
 ## Quick start
 
+One command from a fresh clone, with nothing to copy:
+
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
+
+`.env.example` holds safe defaults and is used as-is. A `.env` is **optional, for overrides only**. If it exists, anything it sets wins, for example `PORT=3100` or `LOG_LEVEL=debug`.
 
 | What | Where |
 |---|---|
@@ -72,11 +75,12 @@ docker build --target test backend
 
 ## Configuration
 
-All settings are environment variables. They are listed with safe defaults in [`.env.example`](.env.example) and documented in blueprint §5.10. To run the API outside Docker (`cd backend && npm run dev`), set `SMTP_HOST=localhost` in `.env`.
+All settings are environment variables. They are listed with safe defaults in [`.env.example`](.env.example), which Docker Compose loads directly, and documented in blueprint §5.10. Put any overrides in an optional `.env`: it is git-ignored and loaded after `.env.example`. To run the API outside Docker (`cd backend && npm run dev`), which reads the same two files, set `SMTP_HOST=localhost` in `.env`.
 
 ## Troubleshooting
 
-- **Port 3000, 8025 or 1025 already in use:** stop whatever is using it, or change `PORT` in `.env`. Mailpit's ports are set in `docker-compose.yml`.
+- **Port 3000, 8025 or 1025 already in use:** stop whatever is using it, or set `PORT` in a `.env`. Mailpit's ports are set in `docker-compose.yml`.
+- **Compose complains about `env_file` / `path` / `required`:** your Docker Compose is older than 2.24. Update Docker Desktop (or your Compose plugin).
 - **`docker: command not found` with Docker Desktop installed:** add `~/.docker/bin` to your `PATH`, or enable the CLI tools in Docker Desktop → Settings → Advanced.
 - **The API returns 502 `UPSTREAM_ERROR`:** Fake Store is unreachable and there's no cached copy less than 24 hours old. Check your internet connection. The API logs show the reason.
 - **The simulator can't reach the backend:** make sure `docker compose ps` shows `api` as healthy.
