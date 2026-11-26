@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.13, backend implemented |
+| Status | v0.14, backend implemented |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -767,7 +767,7 @@ Tests never sleep. Time moves through an injected fake clock, and background wor
 | `TtlCache` | Unit with fake clock + `whenIdle()` | fresh hit; expired copy returned immediately and marked stale while one background refresh runs; refresh success replaces the copy; refresh failure keeps the copy, calls the error callback once and starts the back-off; no refresh inside the window, one after it; past the cap the call waits and rethrows; first load waits; a throwing error callback never causes an unhandled rejection; single-flight; bounded entries (oldest evicted) |
 | `startup.ts` | Real server on port 0 + fake repository | `/health` answers while the warm-up is still pending; a failed warm-up logs `catalogue.warmup_failed` and the server keeps serving; a successful warm-up fills the cache |
 | Routes (cache past cap) | Supertest + real `FakeStoreProductRepository` | catalogue older than 24 h and Fake Store down → `GET /products/featured` is 502 |
-| `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing |
+| `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing; several invalid variables at once → **one** `ConfigError` naming every one of them |
 
 ### 9.2 iOS (Swift Testing)
 
@@ -854,3 +854,4 @@ None open.
 | 0.11 | 2026-11-26 | Logger review. New §5.11 "Log events" lists every event, its level and its context. Debug events added: `config.loaded` (safe allowlisted summary), `cache.hit` / `cache.miss` / `cache.stale`, `upstream.request`, `image.fetched`, `search.executed`, `email.sending` / `email.sent`. `TtlCache` receives `name` + `Logger`; the repository, `SmtpEmailService` and the products route receive an injected `Clock` (`ports/Clock.ts`, `AppDeps.now`). Rules: debug only, no customer data or secrets, durations from the injected clock. |
 | 0.12 | 2026-11-26 | Container test seams documented in §5.3: `now` override (default `performance.now()`) and `Container.whenIdle()`. §9 states that tests never sleep. The end-to-end logging test uses a fake clock and `whenIdle()` instead of real sleeps. |
 | 0.13 | 2026-11-26 | Drift fixes (docs only): §5.2 test tree shows the sub-folders, the top-level test files and `test/support/fakeStore.ts`; §5.5 `buildEnquiryEmail` takes `receivedAt`; "Last updated" set to 2026-11-26. |
+| 0.14 | 2026-11-26 | §9.1: a config test proves that one `ConfigError` lists every invalid variable, not just the first. |
