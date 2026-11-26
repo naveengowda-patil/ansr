@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.24, backend implemented, iOS Home, Category, Search results and Product detail built (phase 2.4) |
+| Status | v0.25, backend implemented, every iOS screen built: Home, Category, Search results, Product detail and the Enquiry sheet (phase 2.5) |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -641,6 +641,7 @@ View → ViewModel → repository protocol → Remote…Repository → NetworkCl
   - `CategoryViewData { title, topRated: [ProductTileViewData], moreTitle, rest: [ProductTileViewData] }`
   - `SearchResultsViewData { query, summary, results: [ProductTileViewData] }`
   - `ProductDetailViewData { id, title, priceText, ratingText, categoryText, description }`
+  - The Enquiry sheet has no view data or `ViewState`: it is a form, with its fields and an `EnquiryFormState` in the view model (§7.8.5).
 - **Naming:** a protocol is named for its **role**, and a concrete type for **how** it does the job.
   - `NetworkClient` / `URLSessionNetworkClient`
   - `ProductRepository` / `RemoteProductRepository`
@@ -662,6 +663,7 @@ View → ViewModel → repository protocol → Remote…Repository → NetworkCl
 
   Its one public view entry is `rootView()`, which `SceneDelegate` hosts.
 - **`screen(for: Route) -> Screen`** sits between a route and its view. It calls the private factory and returns a `Screen` value holding the built view model (`.category(CategoryViewModel)`, `.searchResults(SearchResultsViewModel)` or `.productDetail(ProductDetailViewModel)`). Every route now has its real screen. `makeDestination(for:)` only turns a `Screen` into its view. `screen(for:)` is internal, so tests can check which screen a route builds and how it is wired, without inspecting SwiftUI view types.
+- **`sheetScreen(for: Sheet) -> SheetScreen`** does the same for the sheet: it returns `.enquiry(EnquiryViewModel)` from `makeEnquiry(productId:productTitle:)`, and `makeSheet(for:)` only turns it into `EnquiryView`. It is a separate enum from `Screen`, so `makeDestination(for:)` never has a sheet case to handle.
 - **`CoordinatorView`** is the navigation shell that `rootView()` returns. It holds the `NavigationStack(path:)`, `.navigationDestination(for:)`, `.sheet(item:)` and the theme, and owns no state: the coordinator hands it the two bindings and closures that call its private factories.
 
 ```swift
@@ -773,7 +775,7 @@ protocol NetworkClient: Sendable {
 | `.decoding` | The response body doesn't decode |
 | `.transport` | Any other `URLError` |
 
-**`ErrorMessages`** is one pure function, `message(for: APIError) -> String`, that turns an error into user-facing text. The text lives in `Strings` (§7.9), and raw errors are never shown.
+**`ErrorMessages`** is one pure function, `message(for: APIError, notFoundMessage: String = Strings.errorNotFound) -> String`, that turns an error into user-facing text. The text lives in `Strings` (§7.9), and raw errors are never shown. A screen that knows what a 404 means passes its own `notFoundMessage`: the enquiry sheet passes "This product is no longer available." (§7.8.5).
 
 | Error | Message |
 |---|---|
@@ -895,7 +897,7 @@ protocol ImageProvider: Sendable {
 | **Product detail** | `.product(id:)` | `ProductDetailViewModel` | `product(id:)` → `ViewState<ProductDetailViewData>` | 404: "This product is no longer available." | Enquire → `showEnquiry` |
 | **Enquiry** (sheet) | `Sheet.enquiry` | `EnquiryViewModel` | `submit(EnquiryRequest)` | none: it's a form (§7.8.5) | submit; Done → `dismissSheet` |
 
-**Built so far (phase 2.4):** Home, Category, Search results and Product detail are real. Until the enquiry sheet lands (phase 2.5), `makeSheet(for:)` shows a `RoutePlaceholderView` naming the product ("Enquiry for Mens Cotton Jacket"), so presenting and dismissing can be checked at runtime.
+**Built (phase 2.5):** every screen is real. `RoutePlaceholderView` and its strings are gone.
 
 Every screen except Enquiry uses the states and loading rules in §7.11. Any error other than the 404s above shows the error state with Retry.
 
@@ -961,26 +963,49 @@ Layout: D-035.
 
 #### 7.8.5 Enquiry sheet
 
-- **Presentation:** a sheet over Product detail. It shows the product title and three fields: name, email (email keyboard, no autocorrection or autocapitalisation) and message (multi-line, optional).
-- **Field values live in the view model.**
-- **Validation mirrors §6.9.** The backend stays the final judge.
+- **Presentation:** a sheet over Product detail, in its own `NavigationStack` with the title "Enquiry".
+  - The first section shows which product it's about: "About" and the product title.
+  - Then three fields: name, email and message (optional).
+- **`EnquiryViewModel`** (`@MainActor @Observable`) receives the product id and title, `EnquiryRepository` and a weak `EnquiryNavigating` through `init`. The coordinator builds it in `makeEnquiry(productId:productTitle:)` (§7.4).
+- **Field values live in the view model** (`name`, `email`, `message`). The view binds to them.
+- **Keyboard:**
+  - name: word capitalisation, `.textContentType(.name)`;
+  - email: the email keyboard, no capitalisation, no autocorrection, `.textContentType(.emailAddress)`;
+  - message: a multi-line field (`TextField(axis: .vertical)`).
+  - Return on name moves to email, and on email moves to message, with `@FocusState` (the one state a view may own, §7.3).
 
-| Field | Rule |
-|---|---|
-| `name` | Required. Trimmed, 1–100 characters, no line breaks. |
-| `email` | Required. Trimmed, a valid email shape (`local@domain.tld`, no spaces), at most 254 characters. |
-| `message` | Optional. At most 2000 characters, line breaks allowed. Omitted from the request when blank. |
-| `productId` | A Swift `Int` taken from the sheet, sent as a JSON number (§7.5). |
+**Validation mirrors §6.9 exactly.** The backend stays the final judge. The rules are pure functions in `Features/Enquiry/EnquiryValidation.swift`:
 
-- **Submit** is enabled only while the form is valid and not submitting. Invalid input never sends a request.
-- **States:** `editing` → `submitting` → `submitted` or `failed(message)` (D-038):
+| Field | Rule (checked in this order) | Message |
+|---|---|---|
+| `name` | No line breaks or other control characters (U+0000–U+001F, U+007F), checked **before** trimming, as the backend does | "Name can't contain line breaks." |
+| | Trimmed, not empty | "Enter your name." |
+| | Trimmed, at most 100 characters | "Name can't be longer than 100 characters." |
+| `email` | No line breaks or other control characters, checked before trimming | "Email can't contain line breaks." |
+| | Trimmed, at most 254 characters | "Email can't be longer than 254 characters." |
+| | Trimmed, matches the backend's email pattern | "Enter a valid email address." |
+| `message` | Optional. When not blank, at most 2000 characters, line breaks allowed | "Message can't be longer than 2000 characters." |
+
+- **Lengths are counted in UTF-16 code units**, like the backend's JavaScript strings, so an emoji counts the same on both sides.
+- **The email pattern is the one zod 4.6.7 uses** for `z.email()` on the backend, copied exactly:
+  `^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$`
+- **A field's error shows only after the user has changed that field**, so an untouched form isn't full of errors. Once changed, the field stays "edited", so clearing it shows "Enter your name.".
+- **The request:** `EnquiryRequest { productId, name, email, message }`, with `productId` the sheet's `Int` (sent as a JSON number, §7.5), `name` and `email` trimmed, and `message` sent as typed, or `nil` when blank (whitespace only).
+
+**States** (`EnquiryFormState`, D-038):
 
 | State | Shows |
 |---|---|
-| `editing` | The form. Submit is enabled when the form is valid. |
-| `submitting` | The form disabled, with progress on Submit. **Swipe-to-dismiss is blocked** (`interactiveDismissDisabled`). |
-| `submitted` | The thank-you message: "Thank you, {name}. Our sales team will reply to {email} soon." It uses the trimmed values. **Done** calls `dismissSheet()`. |
-| `failed(message)` | The form, **with everything the user typed kept**, the message from `ErrorMessages`, and Submit enabled again. |
+| `editing` | The form. Submit is enabled when the form is valid. Cancel calls `dismissSheet()`. |
+| `submitting` | The form with its fields disabled, progress on Submit, and Cancel disabled. **Swipe-to-dismiss is blocked:** the view applies `interactiveDismissDisabled(viewModel.isDismissDisabled)`, which is true only in this state. |
+| `submitted(message)` | The form is replaced by the thank-you message, "Thank you, {name}. Our sales team will reply to {email} soon.", using the trimmed values, and a **Done** button that calls `dismissSheet()`. |
+| `failed(message)` | The form again, editable, **with everything the user typed kept** and the error shown above the fields. Submit is enabled again when the form is valid, and Cancel works. The error stays until the next submit. |
+
+- **Submit** is enabled only when the form is valid and the state is `editing` or `failed`. Invalid input never sends a request.
+- **A second submit while one is running is ignored** (the state is `submitting`).
+- **Failure messages** come from `ErrorMessages.message(for:notFoundMessage:)` with "This product is no longer available." for a 404 (§7.5). The backend's 400 shows "Please check your details and try again.".
+- **A cancelled request** (`.cancelled`) goes back to `editing` with no message. The sheet can't be dismissed while submitting, so this is not expected in practice.
+- **Swiping down** closes the sheet in every state except `submitting`, through the sheet binding and `dismissPresented()` (§7.4).
 
 ### 7.9 Theme, text and formatting
 
@@ -1163,9 +1188,9 @@ The iOS tests cover only what proves AC-1…AC-5, plus the coordinator navigatio
 | `CategoryViewModel` | AC-2 | Mock category repository, recording `CategoryNavigating` | • it loads `category(name)` for its name;<br>• `loading` → `loaded` with `topRated` first, then `rest`, each in API order;<br>• no "More in" section when `rest` is empty;<br>• 404 → `empty` with "This category is no longer available.";<br>• any other error → `error`, then `retry()` → `loading` → `loaded`;<br>• a second load while one is running is ignored;<br>• a tile tap → `showProduct(id:)`. |
 | `SearchResultsViewModel` | AC-3 | Mock product repository, recording `SearchResultsNavigating` | • the repository receives exactly `ProductQuery(q: query)`, nothing else;<br>• exactly the returned products are shown, with the "{n} results for '{q}'" summary, singular and plural;<br>• 0 results → `empty` with "No products match '{q}'.";<br>• an error → `error`, then `retry()` → `loading` → `loaded`;<br>• a second load while one is running is ignored;<br>• a new submit → `showSearchResults(query:)` with trimmed text, and the field goes back to the screen's query;<br>• a blank submit, or the same term ignoring case, is ignored;<br>• curly quotes are submitted as straight ones;<br>• a tile tap → `showProduct(id:)`. |
 | `ProductDetailViewModel` | AC-4 | Mock product repository, recording `ProductDetailNavigating` | • it loads `product(id:)` for exactly its id;<br>• it maps title, price, rating, category and description;<br>• 404 → `empty`;<br>• any other error → `error`, then `retry()` → `loading` → `loaded`;<br>• a second load while one is running is ignored;<br>• Enquire → `showEnquiry(productId:productTitle:)` with the loaded product, and nothing before it has loaded. |
-| `EnquiryViewModel` | AC-5 | Mock enquiry repository (succeeds, fails or holds), recording `EnquiryNavigating` | **Valid:**<br>• `editing` → `submitting` → `submitted` with the thank-you text;<br>• the request has `productId` as an `Int` and trimmed fields.<br>**Invalid** (blank name, a line break in the name, a bad email, over a length limit):<br>• Submit is disabled and no request is made.<br>**Failure:**<br>• `failed(message)`, every field kept, Submit enabled again.<br>**Done** → `dismissSheet()`. |
+| `EnquiryViewModel` | AC-5 | Mock enquiry repository (succeeds, fails or holds), recording `EnquiryNavigating` | **Valid:**<br>• the repository receives exactly one `EnquiryRequest`: `productId` as an `Int`, trimmed name and email, `nil` for a blank message;<br>• `editing` → `submitting` → `submitted` with the thank-you text.<br>**Invalid** (an empty name, a line break in the name, an invalid email, a name or message over its limit):<br>• Submit is disabled and a submit makes no request;<br>• a field's error shows only once that field is edited.<br>**Failure:**<br>• `failed(message)` with the `ErrorMessages` text, and "This product is no longer available." for a 404;<br>• every field kept, Submit enabled again, and a resubmit succeeds.<br>**While submitting:** a second submit is ignored, and dismissal is blocked.<br>**Done** and **Cancel** → `dismissSheet()`. |
 | `AppBootstrapper` | All (no network in tests) | The real bootstrapper with a given info dictionary and environment | • the test process carries `XCTestConfigurationFilePath`;<br>• with it set, `configure()` returns `.hostingTests` and builds nothing;<br>• an invalid `API_BASE_URL` gives `.configurationError` naming the key. |
-| `AppCoordinator` | Navigation for AC-1…AC-5 | The real coordinator with `AppDependencies.mock` | • `showProduct`, `showCategory` and `showSearchResults` push the right `Route`;<br>• `screen(for: .category(name:))` builds the Category screen for that name, with the coordinator as its navigator;<br>• `screen(for: .searchResults(query:))` builds the Search results screen for that query, the same way;<br>• `screen(for: .product(id:))` builds the Product detail screen for that id, and its Enquire sets the sheet;<br>• two searches push two screens;<br>• the path binding shortening the path pops;<br>• `showEnquiry` presents the sheet, and `dismissSheet` clears it. |
+| `AppCoordinator` | Navigation for AC-1…AC-5 | The real coordinator with `AppDependencies.mock` | • `showProduct`, `showCategory` and `showSearchResults` push the right `Route`;<br>• `screen(for: .category(name:))` builds the Category screen for that name, with the coordinator as its navigator;<br>• `screen(for: .searchResults(query:))` builds the Search results screen for that query, the same way;<br>• `screen(for: .product(id:))` builds the Product detail screen for that id, and its Enquire sets the sheet;<br>• two searches push two screens;<br>• the path binding shortening the path pops;<br>• `showEnquiry` presents the sheet, and `dismissSheet` clears it;<br>• `sheetScreen(for: .enquiry(productId:productTitle:))` builds the Enquiry screen for that product, with the coordinator as its navigator. |
 
 **Manual walkthrough before the iOS PR:** walk through AC-1…AC-5 by hand on **both schemes** (D-040).
 - **`ANSR Debug`:** against the local backend from §8.2, with the enquiry email visible in Mailpit.
@@ -1265,3 +1290,4 @@ None open.
 | 0.22 | 2026-11-26 | iOS phase 2.2, Category, plus fixes from testing Home. §7.8.2: the navigation title comes from the route's name, both lists empty → the empty state, no reload on coming back. §7.4: `screen(for:)` returns a `Screen` with the built view model, so tests can check what a route builds. §7.5: `.unreachable` for cannot connect, cannot find host and DNS failure, with its own message. §7.8: the search field has no auto-capitalisation or autocorrection, shared as `productSearchField`. §7.2: `Screen`, `ProductTileRow`, `ProductTileGrid`, `ProductSearchField`. §5.10: the `FEATURED_PRODUCT_IDS` example is now `12,11,3,18,5`, the five highest-rated products (D-002). §9.2 updated. |
 | 0.23 | 2026-11-26 | iOS phase 2.3, Search results. §7.8: search terms go through `SearchTerm.normalized(_:)` (trim, curly quotes to straight), found when `men's` from the keyboard arrived as `men’s` and matched nothing. §7.8.3: errors and loading rules like the other screens; a submit of the same term as the screen's query (trimmed, ignoring case) does nothing, so identical screens can't stack; after pushing, the field goes back to the screen's query. §7.3: `SearchResultsViewData` carries the `query`. §7.4: `Screen.searchResults`. §9.2 updated. |
 | 0.24 | 2026-11-26 | iOS phase 2.4, Product detail. §7.8.4: view data and formatters, the image requested when the loaded content appears, Enquire pinned and only acting once loaded, errors with Retry, no reload on coming back. §7.4: `Screen.productDetail`, and the placeholder case is gone now that every route has its screen. §7.8: the enquiry sheet placeholder names the product. §9.2 updated. |
+| 0.25 | 2026-11-26 | iOS phase 2.5, the Enquiry sheet. §7.8.5 rewritten in detail: the sheet's layout and keyboard, validation as pure functions mirroring §6.9 exactly (control characters checked before trimming, UTF-16 lengths, the backend's email pattern), field errors only once a field is edited, `EnquiryFormState` with Cancel, Done, blocked dismissal while submitting, the error above the form until the next submit, and `.cancelled` back to `editing`. §7.4: `sheetScreen(for:) -> SheetScreen`. §7.5: `ErrorMessages.message(for:notFoundMessage:)`, so the sheet's 404 reads "This product is no longer available.". §7.3: the sheet has no view data. §7.8: every screen is built and `RoutePlaceholderView` is gone. §9.2 updated. D-038 updated. |

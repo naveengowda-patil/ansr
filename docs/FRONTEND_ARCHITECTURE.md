@@ -164,7 +164,7 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
 
 - **Files:** `ANSR/Navigation/`
   - `AppCoordinator.swift` and `CoordinatorView.swift` (the stack and sheet shell)
-  - `Route.swift` and `Sheet.swift`
+  - `Route.swift`, `Sheet.swift` and `Screen.swift` (what a route or the sheet builds, for tests)
   - the five navigator protocols, in `Navigating.swift`
 - **Public API:**
   - `AppCoordinator.rootView()`.
@@ -260,17 +260,19 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 - **Files:** `ANSR/Features/Enquiry/`
 - **How it works:**
   - **Fields:** name, email and message live in the view model.
-    - Validation mirrors the backend.
+    - Validation mirrors the backend exactly, as pure functions in `EnquiryValidation.swift`: the same limits, the same email pattern, control characters checked before trimming, lengths counted like JavaScript strings.
     - Submit stays disabled until the form is valid.
+    - A field shows its error only once the user has changed it.
   - **States:** editing → submitting → submitted (thank-you) or failed.
-  - **While submitting,** the sheet can't be swiped away.
-  - **On failure,** everything typed is kept and Submit works again.
-  - **Done** closes the sheet.
+  - **While submitting,** the fields are disabled and the sheet can't be swiped away.
+  - **On failure,** the error shows above the form, everything typed is kept and Submit works again. A 404 reads "This product is no longer available."
+  - **Cancel** (while editing) and **Done** (after the thank-you) close the sheet.
 - **Tests:** `EnquiryViewModel`. It covers:
-  - valid → sent → thank-you;
-  - invalid input blocked with no request;
-  - failure keeps the input;
-  - Done dismisses.
+  - the exact request sent, then the thank-you;
+  - each invalid case blocking Submit with no request;
+  - failure keeping the input, with the right message, and a resubmit working;
+  - a second submit ignored and dismissal blocked while submitting;
+  - Done and Cancel dismissing.
 - **Rules:**
   - [§7.8.5](BLUEPRINT.md#785-enquiry-sheet)
   - [§6.9](BLUEPRINT.md#69-post-enquiries-ac-5) (backend rules)

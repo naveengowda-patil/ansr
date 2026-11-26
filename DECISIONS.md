@@ -442,10 +442,13 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
   - Swipe-to-dismiss is blocked while submitting.
   - On failure, everything the user typed is kept and Submit is enabled again.
   - The thank-you text is "Thank you, {name}. Our sales team will reply to {email} soon.", and Done dismisses the sheet.
+  - Settled in phase 2.5: the client copies the backend's rules exactly, including zod's email pattern, control characters checked before trimming and UTF-16 lengths. A field shows its error only once it has been changed. A failure's message stays above the form until the next submit.
 - **Why:**
   - Checking on the client avoids a pointless round trip. The backend stays the final judge.
   - Blocking dismiss while submitting avoids an email being sent with no confirmation shown.
   - Keeping the input makes Retry a single tap.
+  - Copying the backend's exact rules means a form the app accepts is never rejected with a 400 for a reason the user couldn't see. If the backend's rules change, both sides change together (§6.9 and §7.8.5).
+  - An untouched form full of red errors reads as a telling-off before the user has done anything.
 - **Blueprint:** §6.9, §7.8.5
 
 ### D-039 — Project settings, Debug and Prod configurations, shared schemes
