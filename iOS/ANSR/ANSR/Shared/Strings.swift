@@ -25,8 +25,12 @@ enum Strings {
     static let homeTopRated = "Top rated"
     static let homeCategories = "Categories"
     static let homeEmpty = "No products to show right now."
-    /// Shown until the real Home screen lands (phase 2).
-    static let homePlaceholder = "Products are on their way."
+
+    // MARK: Route placeholders (until each screen lands)
+    static func placeholderProduct(id: Int) -> String { "Product \(id)" }
+    static func placeholderCategory(name: String) -> String { "Category \(name)" }
+    static func placeholderSearch(query: String) -> String { "Search: \(query)" }
+    static func placeholderEnquiry(productId: Int) -> String { "Enquiry for product \(productId)" }
 
     // MARK: Category (§7.8.2)
     static let categoryTopRated = "Top rated"

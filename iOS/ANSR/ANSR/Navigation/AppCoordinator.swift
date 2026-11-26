@@ -47,7 +47,8 @@ import SwiftUI
         path.removeLast(path.count - depth)
     }
 
-    private var pathBinding: Binding<[Route]> {
+    /// Internal, not private, so tests can shorten the path the way the system does. Its setter can only pop.
+    var pathBinding: Binding<[Route]> {
         Binding(
             get: { self.path },
             set: { newPath in
@@ -58,7 +59,8 @@ import SwiftUI
         )
     }
 
-    private var sheetBinding: Binding<Sheet?> {
+    /// Internal, not private, so tests can clear the sheet the way the system does. Its setter can only dismiss.
+    var sheetBinding: Binding<Sheet?> {
         Binding(
             get: { self.sheet },
             set: { newSheet in
@@ -73,25 +75,34 @@ import SwiftUI
     // MARK: - Screens (private factories)
 
     private func makeHome() -> some View {
-        // Phase 1 placeholder: the real Home (HomeView + HomeViewModel) lands in phase 2.
-        HomePlaceholderView()
+        HomeView(viewModel: HomeViewModel(
+            productRepository: dependencies.productRepository,
+            categoryRepository: dependencies.categoryRepository,
+            imageProvider: dependencies.imageProvider,
+            navigator: self,
+            locale: dependencies.locale
+        ))
     }
 
     @ViewBuilder
     private func makeDestination(for route: Route) -> some View {
-        // Phase 1: Category, Search results and Product detail land in phase 2, each from its own factory.
+        // Placeholders until Category, Product detail and Search results land, each from its own factory.
         switch route {
-        case .category, .product, .searchResults:
-            EmptyView()
+        case .category(let name):
+            RoutePlaceholderView(title: Strings.placeholderCategory(name: name))
+        case .product(let id):
+            RoutePlaceholderView(title: Strings.placeholderProduct(id: id))
+        case .searchResults(let query):
+            RoutePlaceholderView(title: Strings.placeholderSearch(query: query))
         }
     }
 
     @ViewBuilder
     private func makeSheet(for sheet: Sheet) -> some View {
-        // Phase 1: the enquiry sheet lands in phase 2.
+        // Placeholder until the enquiry sheet lands.
         switch sheet {
-        case .enquiry:
-            EmptyView()
+        case .enquiry(let productId, _):
+            RoutePlaceholderView(title: Strings.placeholderEnquiry(productId: productId))
         }
     }
 }
