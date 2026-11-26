@@ -246,9 +246,9 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 - **How it works:**
   - The product is fetched by id.
   - The screen shows a large image, the title, price, rating, category and description.
-  - Enquire is pinned at the bottom and opens the enquiry sheet.
-  - A product that no longer exists shows the empty state.
-- **Tests:** `ProductDetailViewModel`. It checks the load by id, the mapping, 404 → empty, and that Enquire opens the sheet.
+  - Enquire is pinned at the bottom, stays visible while scrolling, and opens the enquiry sheet once the product has loaded.
+  - A product that no longer exists shows the empty state. Any other failure shows the error with Retry.
+- **Tests:** `ProductDetailViewModel`. It checks the load by id, the mapping, 404 → empty, errors and Retry, a second load being ignored, and that Enquire opens the sheet only once loaded.
 - **Rules:**
   - [§7.8.4](BLUEPRINT.md#784-product-detail)
   - [D-012](../DECISIONS.md)
