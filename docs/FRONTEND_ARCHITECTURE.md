@@ -231,9 +231,9 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 - **How it works:**
   - The search bar is prefilled with the query. Only the text term is sent.
   - A summary line ("{n} results for '{q}'") sits above a 2-column grid of exactly the returned products.
-  - No matches shows an empty state that names the query.
-  - Searching again pushes a new results screen.
-- **Tests:** `SearchResultsViewModel`. It checks that the term is sent, that only the results are shown, the summary and empty text, and that a new search pushes.
+  - No matches shows an empty state that names the query. Any error shows the error with Retry.
+  - Searching again pushes a new results screen, so Back returns to the previous results. Searching the same term again does nothing.
+- **Tests:** `SearchResultsViewModel`. It checks that only the term is sent, that only the results are shown, the summary and empty text, errors and Retry, and that a new search pushes while a blank or identical one doesn't.
 - **Rules:**
   - [§7.8.3](BLUEPRINT.md#783-search-results)
   - [D-037](../DECISIONS.md), [D-008](../DECISIONS.md)
