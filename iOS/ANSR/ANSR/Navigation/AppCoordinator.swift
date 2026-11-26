@@ -138,13 +138,29 @@ import SwiftUI
         )
     }
 
+    /// The screen the sheet builds. Internal, not private, so tests can check what it opens and how it's wired.
+    func sheetScreen(for sheet: Sheet) -> SheetScreen {
+        switch sheet {
+        case .enquiry(let productId, let productTitle):
+            .enquiry(makeEnquiry(productId: productId, productTitle: productTitle))
+        }
+    }
+
     @ViewBuilder
     private func makeSheet(for sheet: Sheet) -> some View {
-        // Placeholder until the enquiry sheet lands.
-        switch sheet {
-        case .enquiry(_, let productTitle):
-            RoutePlaceholderView(title: Strings.placeholderEnquiry(productTitle: productTitle))
+        switch sheetScreen(for: sheet) {
+        case .enquiry(let viewModel):
+            EnquiryView(viewModel: viewModel)
         }
+    }
+
+    private func makeEnquiry(productId: Int, productTitle: String) -> EnquiryViewModel {
+        EnquiryViewModel(
+            productId: productId,
+            productTitle: productTitle,
+            enquiryRepository: dependencies.enquiryRepository,
+            navigator: self
+        )
     }
 }
 

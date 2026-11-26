@@ -7,3 +7,8 @@ enum Screen {
     case searchResults(SearchResultsViewModel)
     case productDetail(ProductDetailViewModel)
 }
+
+/// What the sheet builds (BLUEPRINT §7.4). Separate from `Screen`, so a route's destination never has a sheet case.
+enum SheetScreen {
+    case enquiry(EnquiryViewModel)
+}

@@ -120,4 +120,18 @@ struct AppCoordinatorTests {
         coordinator.sheetBinding.wrappedValue = nil
         #expect(coordinator.sheet == nil)
     }
+
+    @Test("The enquiry sheet builds the Enquiry screen for that product, with the coordinator as its navigator")
+    func enquirySheetBuildsEnquiryScreen() {
+        coordinator.showEnquiry(productId: 3, productTitle: "Mens Cotton Jacket")
+        guard let sheet = coordinator.sheet, case .enquiry(let viewModel) = coordinator.sheetScreen(for: sheet) else {
+            Issue.record("Expected the Enquiry screen")
+            return
+        }
+        #expect(viewModel.productId == 3)
+        #expect(viewModel.productTitle == "Mens Cotton Jacket")
+
+        viewModel.didTapCancel()
+        #expect(coordinator.sheet == nil)
+    }
 }

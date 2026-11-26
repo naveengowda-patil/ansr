@@ -10,6 +10,7 @@ struct AppTheme: Sendable {
         let secondaryText: Color
         let accent: Color
         let placeholder: Color
+        let error: Color
     }
 
     struct Fonts: Sendable {
@@ -55,7 +56,8 @@ extension AppTheme {
             primaryText: Color(uiColor: .label),
             secondaryText: Color(uiColor: .secondaryLabel),
             accent: .accentColor,
-            placeholder: Color(uiColor: .tertiarySystemFill)
+            placeholder: Color(uiColor: .tertiarySystemFill),
+            error: Color(uiColor: .systemRed)
         ),
         fonts: Fonts(
             title: .title2.weight(.semibold),

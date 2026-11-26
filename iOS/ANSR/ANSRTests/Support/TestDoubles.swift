@@ -160,6 +160,34 @@ final class RecordingProductDetailNavigator: ProductDetailNavigating {
     }
 }
 
+/// Records every Enquiry navigation call.
+@MainActor
+final class RecordingEnquiryNavigator: EnquiryNavigating {
+    private(set) var dismissCount = 0
+
+    func dismissSheet() { dismissCount += 1 }
+}
+
+/// An `EnquiryRepository` that records every request, replies with a set result, and can hold the next call.
+actor StubEnquiryRepository: EnquiryRepository {
+    private(set) var requests: [EnquiryRequest] = []
+    private var result: Result<EnquiryResponse, APIError> = .success(EnquiryResponse(status: "sent"))
+    private var submitHold: Hold?
+
+    func setResult(_ result: Result<EnquiryResponse, APIError>) { self.result = result }
+    /// Holds only the next call to `submit(_:)`; later calls go straight through.
+    func holdSubmit(_ hold: Hold?) { submitHold = hold }
+
+    func submit(_ enquiry: EnquiryRequest) async throws(APIError) -> EnquiryResponse {
+        requests.append(enquiry)
+        if let hold = submitHold {
+            submitHold = nil
+            await hold.wait()
+        }
+        return try result.get()
+    }
+}
+
 /// Products shaped like the backend's (BLUEPRINT §6.1).
 enum Fixtures {
     static func product(id: Int, title: String, price: String, rate: Double, count: Int, category: String = "jewelery") -> Product {

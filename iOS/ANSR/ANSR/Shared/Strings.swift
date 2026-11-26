@@ -27,9 +27,6 @@ enum Strings {
     static let homeCategories = "Categories"
     static let homeEmpty = "No products to show right now."
 
-    // MARK: Enquiry sheet placeholder (until the enquiry sheet lands)
-    static func placeholderEnquiry(productTitle: String) -> String { "Enquiry for \(productTitle)" }
-
     // MARK: Category (§7.8.2)
     static let categoryTopRated = "Top rated"
     static func categoryMore(_ categoryTitle: String) -> String { "More in \(categoryTitle)" }
@@ -46,11 +43,21 @@ enum Strings {
     static let productNotFound = "This product is no longer available."
 
     // MARK: Enquiry (§7.8.5)
+    static let enquiryTitle = "Enquiry"
+    static let enquiryAbout = "About"
+    static let enquiryCancel = "Cancel"
     static let enquiryName = "Name"
     static let enquiryEmail = "Email"
     static let enquiryMessage = "Message (optional)"
     static let enquirySubmit = "Submit"
     static let enquiryDone = "Done"
+    static let enquiryNameLineBreak = "Name can't contain line breaks."
+    static let enquiryNameRequired = "Enter your name."
+    static let enquiryNameTooLong = "Name can't be longer than 100 characters."
+    static let enquiryEmailLineBreak = "Email can't contain line breaks."
+    static let enquiryEmailTooLong = "Email can't be longer than 254 characters."
+    static let enquiryEmailInvalid = "Enter a valid email address."
+    static let enquiryMessageTooLong = "Message can't be longer than 2000 characters."
     static func enquiryThanks(name: String, email: String) -> String {
         "Thank you, \(name). Our sales team will reply to \(email) soon."
     }
