@@ -11,12 +11,18 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: windowScene)
 
-        switch AppBootstrapper(infoDictionary: Bundle.main.infoDictionary ?? [:]).configure() {
+        let bootstrapper = AppBootstrapper(
+            infoDictionary: Bundle.main.infoDictionary ?? [:],
+            environment: ProcessInfo.processInfo.environment
+        )
+        switch bootstrapper.configure() {
         case .ready(let coordinator):
             self.coordinator = coordinator
             window.rootViewController = UIHostingController(rootView: coordinator.rootView())
         case .configurationError(let message):
             window.rootViewController = UIHostingController(rootView: ConfigurationErrorView(message: message))
+        case .hostingTests:
+            window.rootViewController = UIViewController()
         }
 
         self.window = window

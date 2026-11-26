@@ -7,15 +7,23 @@ struct AppBootstrapper {
     enum Outcome {
         case ready(AppCoordinator)
         case configurationError(message: String)
+        /// The process is hosting unit tests: nothing is built, so tests never reach the network or the image cache.
+        case hostingTests
     }
 
-    private let infoDictionary: [String: Any]
+    /// Set by Xcode in the environment of an app that hosts a test bundle.
+    private static let testConfigurationKey = "XCTestConfigurationFilePath"
 
-    init(infoDictionary: [String: Any]) {
+    private let infoDictionary: [String: Any]
+    private let environment: [String: String]
+
+    init(infoDictionary: [String: Any], environment: [String: String]) {
         self.infoDictionary = infoDictionary
+        self.environment = environment
     }
 
     func configure() -> Outcome {
+        guard environment[Self.testConfigurationKey] == nil else { return .hostingTests }
         let configuration: AppConfiguration
         do {
             configuration = try AppConfiguration(infoDictionary: infoDictionary)
