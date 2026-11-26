@@ -34,34 +34,17 @@ struct HomeView: View {
         .background(theme.colors.background)
         .navigationTitle(Strings.homeTitle)
         .navigationBarTitleDisplayMode(.large)
-        .searchable(
-            text: $viewModel.searchText,
-            placement: .navigationBarDrawer(displayMode: .always),
-            prompt: Strings.searchPrompt
-        )
-        .onSubmit(of: .search) { viewModel.didSubmitSearch() }
+        .productSearchField(text: $viewModel.searchText, onSubmit: viewModel.didSubmitSearch)
         .task { await viewModel.load() }
     }
 
     private func featuredRow(_ tiles: [ProductTileViewData]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: theme.spacing.medium) {
-                ForEach(tiles) { tile in
-                    Button {
-                        viewModel.didTapProduct(id: tile.id)
-                    } label: {
-                        ProductTileView(
-                            data: tile,
-                            imageState: viewModel.imageState(for: tile.id),
-                            onAppear: { await viewModel.tileAppeared(id: tile.id) }
-                        )
-                        .frame(width: theme.imageSizes.tileWidth)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, theme.spacing.small)
-        }
+        ProductTileRow(
+            tiles: tiles,
+            imageState: viewModel.imageState(for:),
+            tileAppeared: viewModel.tileAppeared(id:),
+            tileTapped: viewModel.didTapProduct(id:)
+        )
         .listRowInsets(EdgeInsets(top: 0, leading: theme.spacing.large, bottom: 0, trailing: theme.spacing.large))
     }
 
