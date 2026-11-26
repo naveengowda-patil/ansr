@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TtlCache } from '../../src/lib/TtlCache.js';
 import { deferred } from '../support/fakeStore.js';
+import { RecordingLogger } from '../support/fakes.js';
 
 const TTL = 1_000;
 const MAX_STALE = 10_000;
@@ -8,7 +9,10 @@ const BACKOFF = 500;
 
 function setup(maxEntries = 10) {
   let time = 0;
+  const logger = new RecordingLogger();
   const cache = new TtlCache<string, string>({
+    name: 'test-cache',
+    logger,
     ttlMs: TTL,
     maxStaleAgeMs: MAX_STALE,
     retryBackoffMs: BACKOFF,
@@ -17,6 +21,7 @@ function setup(maxEntries = 10) {
   });
   return {
     cache,
+    logger,
     advance: (ms: number) => {
       time += ms;
     },
@@ -164,6 +169,8 @@ describe('TtlCache: stale-while-revalidate (§5.6, D-011)', () => {
     it('past the cap: the call waits and rethrows when the loader fails, even inside a back-off window', async () => {
       let time = 0;
       const cache = new TtlCache<string, string>({
+        name: 'test-cache',
+        logger: new RecordingLogger(),
         ttlMs: 1_000,
         maxStaleAgeMs: 1_500,
         retryBackoffMs: 5_000, // the window outlasts the remaining stale allowance
@@ -213,6 +220,47 @@ describe('TtlCache: stale-while-revalidate (§5.6, D-011)', () => {
 
     expect((await Promise.all([first, second])).map((r) => r.value)).toEqual(['v1', 'v1']);
     expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  describe('debug events (§5.11)', () => {
+    const cacheEvents = (logger: RecordingLogger) =>
+      logger.entries.filter((entry) => entry.message.startsWith('cache.'));
+
+    it('logs cache.miss (no copy), cache.hit and cache.stale with cache name, key and age', async () => {
+      const { cache, logger, advance } = setup();
+      await cache.get('k', async () => 'v1');
+      advance(TTL - 1);
+      await cache.get('k', async () => 'unused');
+      advance(1);
+      await cache.get('k', async () => 'v2');
+      await cache.whenIdle();
+
+      expect(cacheEvents(logger)).toEqual([
+        { level: 'debug', message: 'cache.miss', context: { cache: 'test-cache', key: 'k', ageMs: null } },
+        { level: 'debug', message: 'cache.hit', context: { cache: 'test-cache', key: 'k', ageMs: TTL - 1 } },
+        { level: 'debug', message: 'cache.stale', context: { cache: 'test-cache', key: 'k', ageMs: TTL } },
+      ]);
+    });
+
+    it('logs cache.miss with the age when the copy is past the cap', async () => {
+      const { cache, logger, advance } = setup();
+      await cache.get('k', async () => 'v1');
+      advance(MAX_STALE + 1);
+      await cache.get('k', async () => 'v2');
+
+      expect(cacheEvents(logger).at(-1)).toEqual({
+        level: 'debug',
+        message: 'cache.miss',
+        context: { cache: 'test-cache', key: 'k', ageMs: MAX_STALE + 1 },
+      });
+    });
+
+    it('logs only at debug level', async () => {
+      const { cache, logger } = setup();
+      await cache.get('k', async () => 'v1');
+      await cache.get('k', async () => 'v1');
+      expect(logger.entries.every((entry) => entry.level === 'debug')).toBe(true);
+    });
   });
 
   it('evicts the least recently used entry beyond maxEntries', async () => {

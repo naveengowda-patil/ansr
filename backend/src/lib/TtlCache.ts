@@ -1,3 +1,6 @@
+import type { Clock } from '../ports/Clock.js';
+import type { Logger } from '../ports/Logger.js';
+
 /**
  * Keyed in-memory cache with stale-while-revalidate, retry back-off and a stale cap
  * (blueprint §5.6, D-011).
@@ -15,15 +18,19 @@
  *   starts a back-off of `retryBackoffMs` during which no new refresh starts.
  * - Background errors are always caught; they never become unhandled rejections.
  * - Failures are never cached. At most `maxEntries` keys; the least recently used is evicted.
+ * - Logs `cache.hit`, `cache.stale` and `cache.miss` at debug with `{ cache, key, ageMs }` (§5.11).
  */
 export interface TtlCacheOptions {
+  /** Shown as `cache` in debug events, e.g. "catalogue" or "image". */
+  readonly name: string;
+  readonly logger: Logger;
   readonly ttlMs: number;
   readonly maxStaleAgeMs: number;
   /** After a failed background refresh, don't start another for this long. */
   readonly retryBackoffMs: number;
   readonly maxEntries: number;
   /** Current time in milliseconds. */
-  readonly now: () => number;
+  readonly now: Clock;
 }
 
 export interface CacheResult<V> {
@@ -58,15 +65,18 @@ export class TtlCache<K, V> {
     if (entry) {
       const ageMs = now - entry.storedAt;
       if (ageMs < this.options.ttlMs) {
+        this.logEvent('cache.hit', key, ageMs);
         this.touch(key, entry);
         return { value: entry.value, stale: false, ageMs };
       }
       if (ageMs <= this.options.maxStaleAgeMs) {
+        this.logEvent('cache.stale', key, ageMs);
         this.touch(key, entry);
         this.revalidateInBackground(key, load, onBackgroundError, now);
         return { value: entry.value, stale: true, ageMs };
       }
     }
+    this.logEvent('cache.miss', key, entry ? now - entry.storedAt : null);
     const value = await this.load(key, load);
     return { value, stale: false, ageMs: 0 };
   }
@@ -133,6 +143,14 @@ export class TtlCache<K, V> {
       this.entries.delete(oldest.value);
       this.retryAfter.delete(oldest.value);
     }
+  }
+
+  private logEvent(event: 'cache.hit' | 'cache.stale' | 'cache.miss', key: K, ageMs: number | null): void {
+    this.options.logger.debug(event, {
+      cache: this.options.name,
+      key,
+      ageMs: ageMs === null ? null : Math.round(ageMs),
+    });
   }
 
   private touch(key: K, entry: Entry<V>): void {

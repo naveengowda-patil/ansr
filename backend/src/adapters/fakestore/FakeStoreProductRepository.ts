@@ -1,6 +1,7 @@
 import type { Product } from '../../domain/product.js';
 import { UpstreamError } from '../../errors.js';
 import type { BackgroundErrorHandler, TtlCache } from '../../lib/TtlCache.js';
+import type { Clock } from '../../ports/Clock.js';
 import type { Logger } from '../../ports/Logger.js';
 import type { ProductImage, ProductRepository } from '../../ports/ProductRepository.js';
 import { type FakeStoreProduct, fakeStoreProductsSchema } from './schema.js';
@@ -31,6 +32,8 @@ export interface FakeStoreProductRepositoryOptions {
   readonly catalogueCache: TtlCache<'catalogue', CatalogueSnapshot>;
   readonly imageCache: TtlCache<number, ProductImage>;
   readonly logger: Logger;
+  /** For the `upstream.request` / `image.fetched` debug durations (§5.11). */
+  readonly now: Clock;
 }
 
 /** `ProductRepository` backed by fakestoreapi.com (blueprint §5.6). */
@@ -63,7 +66,7 @@ export class FakeStoreProductRepository implements ProductRepository {
     if (imageUrl === undefined) return undefined;
     const result = await this.options.imageCache.get(
       id,
-      () => this.fetchImage(imageUrl),
+      () => this.fetchImage(id, imageUrl),
       this.refreshFailedLogger('image.refresh_failed', { productId: id }),
     );
     return result.value;
@@ -91,6 +94,7 @@ export class FakeStoreProductRepository implements ProductRepository {
 
   private async fetchCatalogue(): Promise<CatalogueSnapshot> {
     const url = new URL('products', withTrailingSlash(this.options.baseUrl));
+    const startedAt = this.options.now();
     let response: Response;
     try {
       response = await this.options.fetch(url, {
@@ -98,8 +102,10 @@ export class FakeStoreProductRepository implements ProductRepository {
         signal: AbortSignal.timeout(this.options.timeoutMs),
       });
     } catch (error) {
+      this.logUpstreamRequest(url, isTimeout(error) ? 'timeout' : 'network_error', startedAt);
       throw new UpstreamError('Product source request failed', { cause: error });
     }
+    this.logUpstreamRequest(url, response.status, startedAt);
     if (!response.ok) {
       await discardBody(response);
       throw new UpstreamError(`Product source responded with HTTP ${response.status}`);
@@ -119,8 +125,9 @@ export class FakeStoreProductRepository implements ProductRepository {
   }
 
   /** Applies the image guards from blueprint §5.6 (D-001). */
-  private async fetchImage(imageUrl: string): Promise<ProductImage> {
+  private async fetchImage(productId: number, imageUrl: string): Promise<ProductImage> {
     const url = this.allowedImageUrl(imageUrl);
+    const startedAt = this.options.now();
 
     let response: Response;
     try {
@@ -153,7 +160,25 @@ export class FakeStoreProductRepository implements ProductRepository {
     }
 
     const data = await readBodyWithLimit(response, this.options.imageMaxBytes);
+    this.options.logger.debug('image.fetched', {
+      productId,
+      bytes: data.byteLength,
+      contentType,
+      durationMs: this.elapsedSince(startedAt),
+    });
     return { contentType, data };
+  }
+
+  private logUpstreamRequest(url: URL, status: number | 'timeout' | 'network_error', startedAt: number): void {
+    this.options.logger.debug('upstream.request', {
+      path: url.pathname,
+      status,
+      durationMs: this.elapsedSince(startedAt),
+    });
+  }
+
+  private elapsedSince(startedAt: number): number {
+    return Math.round(this.options.now() - startedAt);
   }
 
   private allowedImageUrl(imageUrl: string): URL {
@@ -233,6 +258,11 @@ function mediaType(header: string | null): string {
 
 function withTrailingSlash(baseUrl: string): string {
   return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+}
+
+/** AbortSignal.timeout() rejects with a DOMException named "TimeoutError". */
+function isTimeout(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'TimeoutError';
 }
 
 function describeError(error: unknown): string {

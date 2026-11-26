@@ -1,6 +1,8 @@
 import type { EmailMessage } from '../../domain/email.js';
 import { UpstreamError } from '../../errors.js';
+import type { Clock } from '../../ports/Clock.js';
 import type { EmailService } from '../../ports/EmailService.js';
+import type { Logger } from '../../ports/Logger.js';
 
 /** The part of a nodemailer transport this adapter uses. */
 export interface MailTransport {
@@ -16,11 +18,18 @@ export interface MailTransport {
 /**
  * `EmailService` over SMTP via nodemailer (blueprint §5.8): Mailpit locally,
  * Amazon SES SMTP in production. Plain text only, never HTML.
+ * Debug events carry a duration only: no addresses, names, subject or body (§5.11).
  */
 export class SmtpEmailService implements EmailService {
-  constructor(private readonly transport: MailTransport) {}
+  constructor(
+    private readonly transport: MailTransport,
+    private readonly logger: Logger,
+    private readonly now: Clock,
+  ) {}
 
   async send(message: EmailMessage): Promise<void> {
+    this.logger.debug('email.sending');
+    const startedAt = this.now();
     try {
       await this.transport.sendMail({
         from: message.from,
@@ -33,5 +42,6 @@ export class SmtpEmailService implements EmailService {
     } catch (error) {
       throw new UpstreamError('Email delivery failed', { cause: error });
     }
+    this.logger.debug('email.sent', { durationMs: Math.round(this.now() - startedAt) });
   }
 }

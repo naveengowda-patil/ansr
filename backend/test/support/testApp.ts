@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import { InMemorySearchEngine } from '../../src/adapters/search/InMemorySearchEngine.js';
 import { type AppDeps, createApp } from '../../src/app.js';
 import type { Product } from '../../src/domain/product.js';
+import type { Clock } from '../../src/ports/Clock.js';
 import type { ProductRepository } from '../../src/ports/ProductRepository.js';
 import type { ProductSearchEngine } from '../../src/ports/ProductSearchEngine.js';
 import { FakeProductRepository, RecordingEmailService, RecordingLogger } from './fakes.js';
@@ -19,6 +20,8 @@ export interface TestAppOptions {
   readonly productRepository?: ProductRepository;
   readonly searchEngine?: ProductSearchEngine;
   readonly settings?: Partial<AppDeps['settings']>;
+  /** Defaults to a clock stuck at 0. */
+  readonly now?: Clock;
 }
 
 export interface TestApp {
@@ -36,6 +39,7 @@ export function createTestApp(options: TestAppOptions = {}): TestApp {
     searchEngine: options.searchEngine ?? new InMemorySearchEngine(),
     emailService,
     logger,
+    now: options.now ?? (() => 0),
     settings: { ...TEST_SETTINGS, ...options.settings },
   });
   return { app, emailService, logger };

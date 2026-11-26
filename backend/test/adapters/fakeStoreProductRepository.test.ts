@@ -254,6 +254,75 @@ describe('FakeStoreProductRepository (§5.6)', () => {
     });
   });
 
+  describe('debug events (§5.11)', () => {
+    it('upstream.request: path, status and duration from the injected clock', async () => {
+      let advanceBy: (ms: number) => void = () => {};
+      const context = setup({
+        products: () => {
+          advanceBy(25);
+          return Response.json(productsFixture);
+        },
+      });
+      advanceBy = context.advance;
+      await context.repository.getAll();
+
+      expect(context.logger.withMessage('upstream.request')).toEqual([
+        { level: 'debug', message: 'upstream.request', context: { path: '/products', status: 200, durationMs: 25 } },
+      ]);
+    });
+
+    it.each([
+      ['an HTTP error', () => new Response('down', { status: 503 }), 503],
+      ['a network error', () => Promise.reject(new TypeError('fetch failed')), 'network_error'],
+    ] as const)('upstream.request on %s reports status %s', async (_label, route, status) => {
+      const { repository, logger } = setup({ products: route });
+      await expect(repository.getAll()).rejects.toBeInstanceOf(UpstreamError);
+      expect(logger.withMessage('upstream.request')[0]?.context).toMatchObject({ path: '/products', status });
+    });
+
+    it('upstream.request on a timeout reports status "timeout"', async () => {
+      const { repository, logger } = setup({ products: neverResolvesUntilAborted, timeoutMs: 20 });
+      await expect(repository.getAll()).rejects.toBeInstanceOf(UpstreamError);
+      expect(logger.withMessage('upstream.request')[0]?.context).toMatchObject({ status: 'timeout' });
+    });
+
+    it('image.fetched: productId, bytes, contentType and duration', async () => {
+      let advanceBy: (ms: number) => void = () => {};
+      const context = setup({
+        image: () => {
+          advanceBy(15);
+          return imageResponse('image/png');
+        },
+      });
+      advanceBy = context.advance;
+      await context.repository.getImage(1);
+
+      expect(context.logger.withMessage('image.fetched')).toEqual([
+        {
+          level: 'debug',
+          message: 'image.fetched',
+          context: { productId: 1, bytes: PNG_BYTES.byteLength, contentType: 'image/png', durationMs: 15 },
+        },
+      ]);
+    });
+
+    it('cache events name the catalogue and image caches', async () => {
+      const { repository, logger } = setup();
+      await repository.getImage(1);
+      await repository.getImage(1);
+
+      const cacheEvents = logger.entries
+        .filter((entry) => entry.message.startsWith('cache.'))
+        .map((entry) => `${entry.message}:${String(entry.context.cache)}:${String(entry.context.key)}`);
+      expect(cacheEvents).toEqual([
+        'cache.miss:catalogue:catalogue',
+        'cache.miss:image:1',
+        'cache.hit:catalogue:catalogue',
+        'cache.hit:image:1',
+      ]);
+    });
+  });
+
   describe('image proxy guards (D-001)', () => {
     it('returns the image bytes and content type', async () => {
       const { repository, imageCalls } = setup();

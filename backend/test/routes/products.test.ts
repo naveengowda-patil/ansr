@@ -122,6 +122,30 @@ describe('GET /products (AC-3, §6.4)', () => {
     expect(response.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('logs search.executed at debug with the parsed query, total and duration (§5.11)', async () => {
+    const ticks = [100, 130];
+    const searchEngine = new InMemorySearchEngine({ capabilities: allCapabilities() });
+    const { app, logger } = createTestApp({ products: catalogue, searchEngine, now: () => ticks.shift() ?? 0 });
+
+    await request(app).get('/products').query({ q: ' ring ', category: 'jewelery', sort: 'rating_desc', page: '1', pageSize: '5' });
+
+    expect(logger.withMessage('search.executed')).toEqual([
+      {
+        level: 'debug',
+        message: 'search.executed',
+        context: {
+          q: 'ring',
+          filters: { category: 'jewelery' },
+          sort: 'rating_desc',
+          page: 1,
+          pageSize: 5,
+          total: 2,
+          durationMs: 30,
+        },
+      },
+    ]);
+  });
+
   describe('absent vs present-but-empty params (§6.4)', () => {
     it.each(['category', 'minPrice', 'sort', 'page'])('rejects ?%s= (present but empty) with 400', async (param) => {
       const { app } = createTestApp({ products: catalogue });

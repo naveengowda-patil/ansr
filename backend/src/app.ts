@@ -1,5 +1,6 @@
 import express, { type Express } from 'express';
 import { errorHandler, notFoundHandler } from './http/errorHandler.js';
+import type { Clock } from './ports/Clock.js';
 import type { EmailService } from './ports/EmailService.js';
 import type { Logger } from './ports/Logger.js';
 import type { ProductRepository } from './ports/ProductRepository.js';
@@ -15,6 +16,8 @@ export interface AppDeps {
   readonly searchEngine: ProductSearchEngine;
   readonly emailService: EmailService;
   readonly logger: Logger;
+  /** Durations for debug events (§5.11). */
+  readonly now: Clock;
   readonly settings: {
     readonly featuredProductIds: readonly number[];
     readonly salesInboxEmail: string;
@@ -26,7 +29,7 @@ export interface AppDeps {
 
 /** Builds the Express app without binding a port, so tests can drive it directly. */
 export function createApp(deps: AppDeps): Express {
-  const { productRepository, searchEngine, emailService, logger, settings } = deps;
+  const { productRepository, searchEngine, emailService, logger, now, settings } = deps;
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: settings.jsonBodyLimit }));
@@ -37,6 +40,7 @@ export function createApp(deps: AppDeps): Express {
       productRepository,
       searchEngine,
       logger,
+      now,
       featuredProductIds: settings.featuredProductIds,
       imageClientMaxAgeSeconds: settings.imageClientMaxAgeSeconds,
     }),

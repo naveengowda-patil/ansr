@@ -108,6 +108,36 @@ const envSchema = z.object({
     .default('10kb'),
 });
 
+/**
+ * The `config.loaded` debug context (§5.11). Built from an explicit allowlist, so a new
+ * secret added to Config never appears here by accident. Never includes SMTP_USER,
+ * SMTP_PASS or any email address.
+ */
+export function safeConfigSummary(config: Config): Record<string, unknown> {
+  return {
+    port: config.port,
+    logLevel: config.logLevel,
+    cache: {
+      ttlSeconds: config.productApi.cacheTtlSeconds,
+      staleMaxAgeSeconds: config.productApi.staleMaxAgeSeconds,
+      retryBackoffSeconds: config.productApi.retryBackoffSeconds,
+      imageMaxEntries: config.images.cacheMaxEntries,
+    },
+    timeoutsMs: {
+      productApi: config.productApi.timeoutMs,
+      image: config.images.timeoutMs,
+      smtp: config.smtp.timeoutMs,
+    },
+    images: {
+      maxBytes: config.images.maxBytes,
+      clientMaxAgeSeconds: config.images.clientMaxAgeSeconds,
+      hostAllowlist: config.images.hostAllowlist,
+    },
+    featuredProductIds: config.featuredProductIds,
+    smtp: { host: config.smtp.host, port: config.smtp.port, secure: config.smtp.secure },
+  };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {

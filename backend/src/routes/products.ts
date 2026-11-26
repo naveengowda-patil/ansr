@@ -1,10 +1,18 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { selectFeatured } from '../domain/featured.js';
-import { describeUnsupported, findUnsupported, SORT_OPTIONS, type SearchQuery } from '../domain/search.js';
+import {
+  describeUnsupported,
+  FILTER_NAMES,
+  type FilterName,
+  findUnsupported,
+  SORT_OPTIONS,
+  type SearchQuery,
+} from '../domain/search.js';
 import { NotFoundError, ValidationError } from '../errors.js';
 import { nonNegativeNumberParam, positiveIntParam, productIdParams } from '../http/params.js';
 import { parseQuery, parseWith } from '../http/validate.js';
+import type { Clock } from '../ports/Clock.js';
 import type { Logger } from '../ports/Logger.js';
 import type { ProductRepository } from '../ports/ProductRepository.js';
 import type { ProductSearchEngine } from '../ports/ProductSearchEngine.js';
@@ -13,6 +21,7 @@ export interface ProductsRouterDeps {
   readonly productRepository: ProductRepository;
   readonly searchEngine: ProductSearchEngine;
   readonly logger: Logger;
+  readonly now: Clock;
   readonly featuredProductIds: readonly number[];
   readonly imageClientMaxAgeSeconds: number;
 }
@@ -37,6 +46,16 @@ const productsQuerySchema = z
     path: ['minPrice'],
   });
 
+/** The filters actually present in the query, for the search.executed debug event. */
+function presentFilters(query: SearchQuery): Partial<Record<FilterName, string | number>> {
+  const filters: Partial<Record<FilterName, string | number>> = {};
+  for (const name of FILTER_NAMES) {
+    const value = query[name];
+    if (name !== 'q' && value !== undefined) filters[name] = value;
+  }
+  return filters;
+}
+
 export function productsRouter(deps: ProductsRouterDeps): Router {
   const { productRepository, searchEngine, logger } = deps;
   const router = Router();
@@ -59,9 +78,19 @@ export function productsRouter(deps: ProductsRouterDeps): Router {
       throw new ValidationError(describeUnsupported(unsupported));
     }
 
+    const startedAt = deps.now();
     await searchEngine.index(await productRepository.getAll());
     const { ids, total } = await searchEngine.search(query);
     const items = await productRepository.getByIds(ids);
+    logger.debug('search.executed', {
+      q: query.q,
+      filters: presentFilters(query),
+      sort: query.sort,
+      page: query.page,
+      pageSize: query.pageSize,
+      total,
+      durationMs: Math.round(deps.now() - startedAt),
+    });
     res.json({ items, total, page: query.page, pageSize: query.pageSize });
   });
 

@@ -43,9 +43,9 @@ export function createFakeStoreRepository(options: FakeStoreOptions = {}) {
   const fetch = vi.fn<FetchFn>(async (url, init) =>
     url.pathname === '/products' ? products(url, init) : image(url, init),
   );
-  const cacheTiming = { ttlMs: TTL_MS, maxStaleAgeMs: MAX_STALE_MS, retryBackoffMs: BACKOFF_MS, now };
-  const catalogueCache = new TtlCache<'catalogue', CatalogueSnapshot>({ ...cacheTiming, maxEntries: 1 });
-  const imageCache = new TtlCache<number, ProductImage>({ ...cacheTiming, maxEntries: 10 });
+  const cacheTiming = { ttlMs: TTL_MS, maxStaleAgeMs: MAX_STALE_MS, retryBackoffMs: BACKOFF_MS, now, logger };
+  const catalogueCache = new TtlCache<'catalogue', CatalogueSnapshot>({ ...cacheTiming, name: 'catalogue', maxEntries: 1 });
+  const imageCache = new TtlCache<number, ProductImage>({ ...cacheTiming, name: 'image', maxEntries: 10 });
 
   const repository = new FakeStoreProductRepository({
     fetch,
@@ -57,6 +57,7 @@ export function createFakeStoreRepository(options: FakeStoreOptions = {}) {
     catalogueCache,
     imageCache,
     logger,
+    now,
   });
 
   return {

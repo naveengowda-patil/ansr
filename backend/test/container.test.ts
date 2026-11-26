@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, safeConfigSummary } from '../src/config.js';
 import {
   type ClosableMailTransport,
   createContainer,
@@ -80,5 +80,54 @@ describe('smtpTransportOptions', () => {
 
     expect(smtpTransportOptions(withAuth.smtp).auth).toEqual({ user: 'user', pass: 'pass' });
     expect(smtpTransportOptions(userOnly.smtp)).not.toHaveProperty('auth');
+  });
+});
+
+describe('config.loaded (§5.11)', () => {
+  const secrets = {
+    SMTP_USER: 'smtp-user-AKIA123',
+    SMTP_PASS: 'smtp-pass-s3cr3t',
+    MAIL_FROM: 'catalogue@example.com',
+    SALES_INBOX_EMAIL: 'sales-team@example.com',
+  };
+
+  function linesFor(logLevel: string): Record<string, unknown>[] {
+    const lines: string[] = [];
+    const transport: ClosableMailTransport = { sendMail: vi.fn(), close: vi.fn() };
+    const container = createContainer(loadConfig({ ...env, ...secrets, LOG_LEVEL: logLevel }), {
+      createMailTransport: () => transport,
+      writeLog: (line) => lines.push(line),
+    });
+    container.close();
+    return lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  it('is logged once at startup at debug, with the safe values', () => {
+    const loaded = linesFor('debug').filter((line) => line.msg === 'config.loaded');
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toMatchObject({
+      level: 'debug',
+      port: 3000,
+      logLevel: 'debug',
+      featuredProductIds: [1, 5],
+      images: { hostAllowlist: ['fakestoreapi.com'] },
+      smtp: { host: 'mailpit', port: 1025, secure: false },
+      timeoutsMs: { smtp: 10_000 },
+    });
+  });
+
+  it('never contains SMTP_USER, SMTP_PASS or any email address', () => {
+    const logged = JSON.stringify(linesFor('debug'));
+
+    for (const secret of Object.values(secrets)) {
+      expect(logged).not.toContain(secret);
+    }
+    expect(logged).not.toContain('@');
+    expect(JSON.stringify(safeConfigSummary(loadConfig({ ...env, ...secrets })))).not.toMatch(/@|smtp-user|smtp-pass/);
+  });
+
+  it('is not written at LOG_LEVEL=info', () => {
+    expect(linesFor('info')).toEqual([]);
   });
 });

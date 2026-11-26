@@ -5,6 +5,7 @@ import { type MailTransport, SmtpEmailService } from '../../src/adapters/email/S
 import { smtpTransportOptions } from '../../src/container.js';
 import type { EmailMessage } from '../../src/domain/email.js';
 import { UpstreamError } from '../../src/errors.js';
+import { RecordingLogger } from '../support/fakes.js';
 
 const message: EmailMessage = {
   to: 'sales@example.test',
@@ -20,7 +21,7 @@ describe('SmtpEmailService (§5.8)', () => {
     const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' });
     const sendMail = vi.spyOn(transport, 'sendMail');
 
-    await new SmtpEmailService(transport).send(message);
+    await new SmtpEmailService(transport, new RecordingLogger(), () => 0).send(message);
 
     const info: unknown = await sendMail.mock.results[0]?.value;
     const raw = String((info as { message: Buffer }).message);
@@ -35,16 +36,56 @@ describe('SmtpEmailService (§5.8)', () => {
   it('wraps delivery failures in UpstreamError', async () => {
     const transport: MailTransport = { sendMail: () => Promise.reject(new Error('ECONNREFUSED mailpit:1025')) };
 
-    await expect(new SmtpEmailService(transport).send(message)).rejects.toBeInstanceOf(UpstreamError);
+    await expect(new SmtpEmailService(transport, new RecordingLogger(), () => 0).send(message)).rejects.toBeInstanceOf(UpstreamError);
   });
 
   it('wraps a transport timeout in UpstreamError', async () => {
     const timeout = Object.assign(new Error('Greeting never received'), { code: 'ETIMEDOUT' });
     const transport: MailTransport = { sendMail: () => Promise.reject(timeout) };
 
-    const failure = await new SmtpEmailService(transport).send(message).catch((error: unknown) => error);
+    const failure = await new SmtpEmailService(transport, new RecordingLogger(), () => 0).send(message).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(UpstreamError);
     expect((failure as UpstreamError).cause).toBe(timeout);
+  });
+
+  describe('debug events (§5.11)', () => {
+    it('logs email.sending and email.sent with the duration from the injected clock', async () => {
+      let time = 1_000;
+      const logger = new RecordingLogger();
+      const transport: MailTransport = {
+        sendMail: async () => {
+          time += 40;
+          return {};
+        },
+      };
+
+      await new SmtpEmailService(transport, logger, () => time).send(message);
+
+      expect(logger.entries).toEqual([
+        { level: 'debug', message: 'email.sending', context: {} },
+        { level: 'debug', message: 'email.sent', context: { durationMs: 40 } },
+      ]);
+    });
+
+    it('never logs addresses, names, subject or body', async () => {
+      const logger = new RecordingLogger();
+      const transport: MailTransport = { sendMail: async () => ({}) };
+
+      await new SmtpEmailService(transport, logger, () => 0).send(message);
+
+      const logged = JSON.stringify(logger.entries);
+      for (const value of ['Jane', 'jane@example.test', 'sales@example.test', 'catalogue@example.test', 'Silver Ring', 'Is it in stock']) {
+        expect(logged).not.toContain(value);
+      }
+    });
+
+    it('does not log email.sent when sending fails', async () => {
+      const logger = new RecordingLogger();
+      const transport: MailTransport = { sendMail: () => Promise.reject(new Error('down')) };
+
+      await expect(new SmtpEmailService(transport, logger, () => 0).send(message)).rejects.toBeInstanceOf(UpstreamError);
+      expect(logger.entries.map((entry) => entry.message)).toEqual(['email.sending']);
+    });
   });
 
   describe('against a mail server that accepts the connection but never answers', () => {
@@ -71,7 +112,7 @@ describe('SmtpEmailService (§5.8)', () => {
       const startedAt = Date.now();
 
       try {
-        await expect(new SmtpEmailService(transport).send(message)).rejects.toBeInstanceOf(UpstreamError);
+        await expect(new SmtpEmailService(transport, new RecordingLogger(), () => 0).send(message)).rejects.toBeInstanceOf(UpstreamError);
         expect(Date.now() - startedAt).toBeLessThan(2_000);
       } finally {
         transport.close();
