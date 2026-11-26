@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Status | v0.17, backend implemented |
+| Status | v0.18, backend implemented, iOS app designed |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
-| Architecture guides | [BACKEND_ARCHITECTURE.md](BACKEND_ARCHITECTURE.md), [API_CONTRACT.md](API_CONTRACT.md), FRONTEND_ARCHITECTURE.md (added with the iOS work) |
+| Architecture guides | [BACKEND_ARCHITECTURE.md](BACKEND_ARCHITECTURE.md), [API_CONTRACT.md](API_CONTRACT.md), [FRONTEND_ARCHITECTURE.md](FRONTEND_ARCHITECTURE.md) |
 
 This is the single source of truth for **what** to build. Every change starts here: update the relevant section (and the changelog at the bottom), then write code to match. Section numbers are stable so commits, PRs and tests can cite them (e.g. "§6.4").
 
@@ -24,7 +24,7 @@ This is the single source of truth for **what** to build. Every change starts he
 
 **In scope:** the five acceptance criteria in §2, local run via Docker Compose + iOS Simulator, tests for the critical path.
 
-**Out of scope (for now):** authentication, cart/checkout, persistence/database, search sort/filter UI, search pagination UI, rate limiting, analytics, localisation, iPad-specific layouts, deployment pipelines.
+**Out of scope (for now):** authentication, cart/checkout, persistence/database, search sort/filter UI, search pagination UI, rate limiting, analytics, localisation, accessibility work (D-041), iPad-specific layouts, deployment pipelines.
 
 ## 2. Acceptance criteria
 
@@ -50,8 +50,8 @@ This is the single source of truth for **what** to build. Every change starts he
 ```
  iOS app (SwiftUI, MVVM-C)                         Backend (Node.js, Express, TypeScript)              External
 ┌──────────────────────────────┐                ┌──────────────────────────────────────────┐
-│ View → ViewModel → Service   │   HTTP/JSON    │ routes → ports (interfaces) ← adapters   │
-│        protocol → NetworkClient├──────────────▶│   │         ProductRepository ──────────┼──▶ fakestoreapi.com
+│ View → ViewModel → Repository│   HTTP/JSON    │ routes → ports (interfaces) ← adapters   │
+│     protocol → NetworkClient ├──────────────▶│   │         ProductRepository ──────────┼──▶ fakestoreapi.com
 │ AppCoordinator (navigation)  │  (+ images)    │   │         ProductSearchEngine (memory) │
 │ AppDependencies (comp. root) │                │   │         EmailService ───────────────┼──▶ SMTP (Mailpit / SES later)
 └──────────────────────────────┘                │   └─▶ domain/ (pure business rules)      │
@@ -65,9 +65,9 @@ Repository layout:
 /
 ├── CLAUDE.md  DECISIONS.md  AI_USAGE.md  README.md
 ├── .env.example  .gitignore  docker-compose.yml
-├── docs/BLUEPRINT.md
+├── docs/             # BLUEPRINT.md + reader guides
 ├── backend/          # Node.js + TypeScript API
-└── ios/              # SwiftUI app (Xcode project)
+└── iOS/ANSR/         # SwiftUI app (ANSR.xcodeproj, §7.2)
 ```
 
 ---
@@ -538,44 +538,454 @@ Errors: 400 validation, 404 unknown product, 502 email or product source failure
 
 ## 7. iOS app
 
-### 7.1 Stack
+Section numbers 7.1–7.9 keep their earlier topics. 7.10 and 7.11 were added in v0.18.
 
-Why this stack: D-025.
+### 7.1 Stack and project setup
 
-- SwiftUI, Swift 6 language mode (strict concurrency), deployment target **iOS 18.0** (D-013). Requires **Xcode 16 or newer**.
-- Swift Concurrency only (`async`/`await`); no completion handlers, no Combine.
-- Tests with Swift Testing.
-- **No third-party dependencies.** The Xcode project uses synchronized folder groups (Xcode 16+), so files added to a folder are picked up without editing the project file; no project generator.
-- Built and tested with Xcode 26.
+Why this stack: D-025. Why these settings: D-039.
+
+| Setting | Value |
+|---|---|
+| Project | `iOS/ANSR/ANSR.xcodeproj`, with synchronized folder groups (Xcode 16+), so files added to a folder are picked up without editing the project file. No project generator. |
+| Targets | `ANSR` (the app) and `ANSRTests` (unit tests). **No UI test target.** |
+| Deployment target | **iOS 18.0** (D-013), iPhone |
+| Language | **Swift 6** language mode, strict concurrency checking `complete` |
+| Default actor isolation | **`nonisolated`**. UI types are marked `@MainActor` explicitly: views, view models, `AppCoordinator`, `AppBootstrapper` and the UIKit delegates. |
+| Approachable Concurrency | **Off** (`SWIFT_APPROACHABLE_CONCURRENCY = NO`), with no upcoming-feature flags. A `nonisolated` `async` function runs off the main actor, so JSON decoding and image work never run on the main actor by accident. |
+| Signing | No development team. **Simulator only**, so no Apple developer account is needed. |
+| Dependencies | **None**: no Swift packages, no third-party code |
+| Tests | **Swift Testing** (`import Testing`). No XCTest, no UI or snapshot tests (§9.2). |
+| Tooling | Requires **Xcode 16 or newer**. Built and tested with Xcode 26. |
+
+- Swift Concurrency only (`async`/`await`). No completion handlers, no Combine.
 
 ### 7.2 Structure
 
 ```
-ios/
-├── Catalogue.xcodeproj
-├── Config/                  # Debug.xcconfig / Release.xcconfig (API_BASE_URL, REQUEST_TIMEOUT_SECONDS)
-├── Catalogue/
-│   ├── App/                 # CatalogueApp (@main), AppConfiguration, AppDependencies,
-│   │                        # AppCoordinator, CoordinatorView, Route, Sheet, CatalogueNavigating
-│   ├── Networking/          # NetworkClient (protocol), URLSessionNetworkClient, Endpoint,
-│   │                        # Endpoints, APIError, ErrorEnvelope
-│   ├── Models/              # Product, Rating, CategoryProducts, ProductPage, ProductQuery, Enquiry
-│   ├── Services/            # ProductService, CategoryService, EnquiryService, ImageService
-│   │                        # (protocol + live implementation each)
+iOS/ANSR/
+├── ANSR.xcodeproj               # shared schemes in xcshareddata/xcschemes: "ANSR Debug", "ANSR Prod" (§7.7)
+├── Config/
+│   ├── Debug.xcconfig           # API_BASE_URL (local backend), REQUEST_TIMEOUT_SECONDS
+│   └── Prod.xcconfig            # API_BASE_URL (placeholder), REQUEST_TIMEOUT_SECONDS
+├── ANSR/                        # app target
+│   ├── Info.plist               # API_BASE_URL, REQUEST_TIMEOUT_SECONDS, scene manifest (excluded from resources)
+│   ├── App/                     # AppDelegate (@main), SceneDelegate, AppBootstrapper, AppConfiguration,
+│   │                            # AppDependencies, ConfigurationErrorView
+│   ├── Navigation/              # AppCoordinator, Route, Sheet, the five *Navigating protocols
+│   ├── Networking/              # NetworkClient, URLSessionNetworkClient, Endpoint, Endpoints, APIError, ErrorEnvelope
+│   ├── Models/                  # API data models: Product, Rating, CategoryProducts, ProductPage, ProductQuery,
+│   │                            # EnquiryRequest, EnquiryResponse, ItemsResponse
+│   ├── Repositories/            # ProductRepository, CategoryRepository, EnquiryRepository + Remote… of each
+│   ├── Images/                  # ImageProvider, HybridImageProvider
 │   ├── Features/
-│   │   ├── Home/  Category/  Search/  ProductDetail/  Enquiry/   # View + ViewModel per screen
-│   ├── Shared/              # ViewState, ErrorMessages, ProductImageLoader, ProductTile, StateContainerView
-│   └── Theme/               # AppTheme tokens + environment key
-└── CatalogueTests/          # mocks + tests (§9.2)
+│   │   └── Home/  Category/  SearchResults/  ProductDetail/  Enquiry/
+│   │                            # per screen: View, ViewModel, ViewData + its pure mapping functions
+│   ├── Shared/                  # ViewState, StateContainerView, ProductTileView, ProductImageLoader,
+│   │                            # ErrorMessages, Formatters, Strings
+│   ├── Theme/                   # AppTheme tokens + environment key
+│   └── Mocks/                   # AppDependencies.mock + mock repositories for previews (#if DEBUG)
+└── ANSRTests/                   # Swift Testing suites + test doubles (§9.2)
 ```
 
-### 7.3 MVVM-C layering
+### 7.3 MVVM-C layering and models
 
-Strict direction: **View → ViewModel → Service protocol → `NetworkClient`**. No layer skips another or calls upwards.
+The direction is strict, and no layer skips another or calls upwards:
 
-- **Views** only render state and forward user intents. No networking, business logic, navigation decisions or data formatting beyond display. Each screen view holds its ViewModel in `@State`, initialised once via `_viewModel = State(initialValue:)`.
-- **ViewModels** are `@Observable` and `@MainActor`. They receive service protocols and a `CatalogueNavigating` navigator through `init`, expose `ViewState<T>` plus a `retry()` action, and never import SwiftUI view types or touch `URLSession`.
-- **Services** receive a `NetworkClient` through `init`, call endpoints and return domain models. They hold no UI state.
+```
+View → ViewModel → repository protocol → Remote…Repository → NetworkClient → URLSessionNetworkClient → backend
+                 → ImageProvider → HybridImageProvider → NetworkClient (on a cache miss, §7.6)
+```
+
+- **Views are dumb.**
+  - They render view data and call view model intents. Nothing else.
+  - No networking, formatting, validation or navigation decisions.
+  - Every state change is driven by the view model, search text and form fields included. Bindings point at view model state.
+  - The only state a view may own is `@FocusState`.
+  - Each screen view holds its view model in `@State`, created by the coordinator and passed in (`_viewModel = State(initialValue:)`). A view model's `init` does no work, so rebuilding a view is cheap.
+- **View models** are `@MainActor @Observable final class`.
+  - Through `init` they receive the repository protocols they use, `ImageProvider`, their navigator (held `weak`) and the `Locale` used for formatting.
+  - They expose a `ViewState` of view data (§7.11) and intents such as `load()`, `retry()` and taps.
+  - They never touch `URLSession`, `AppCoordinator`, `Route` or other screens.
+- **Two model layers** (D-031):
+
+| Layer | Types | Lives in | Rule |
+|---|---|---|---|
+| **Data models** | `Product`, `Rating`, `CategoryProducts`, `ProductPage`, `ProductQuery`, `EnquiryRequest`, `EnquiryResponse`, `ItemsResponse<Item>` | `Models/` | Match the API (§6) field for field. `Codable` as needed, `Sendable`, `Equatable`. No formatting. `price` is a `Decimal`. |
+| **View data** | One set per screen, e.g. `ProductTileViewData { id, title, priceText, ratingText }` | `Features/<Screen>/` | Exactly what the screen renders, already formatted as text. `Equatable`. |
+
+- **Mapping:** view models turn data models into view data with **pure functions** (model + `Locale` in, view data out), defined next to the view data.
+- **View data per screen:**
+  - `ProductTileViewData { id, title, priceText, ratingText }`, shared by every tile.
+  - `CategoryRowViewData { name, title }`. `name` is spelled as in the data and used for navigation. `title` is capitalised for display.
+  - `HomeViewData { featured: [ProductTileViewData], categories: [CategoryRowViewData] }`
+  - `CategoryViewData { title, topRated: [ProductTileViewData], moreTitle, rest: [ProductTileViewData] }`
+  - `SearchResultsViewData { summary, results: [ProductTileViewData] }`
+  - `ProductDetailViewData { id, title, priceText, ratingText, categoryText, description }`
+- **Naming:** a protocol is named for its **role**, and a concrete type for **how** it does the job.
+  - `NetworkClient` / `URLSessionNetworkClient`
+  - `ProductRepository` / `RemoteProductRepository`
+  - `ImageProvider` / `HybridImageProvider`
+  - D-033.
+
+### 7.4 Coordinator and navigation
+
+- **One `AppCoordinator`** (`@MainActor @Observable final class`) owns all navigation state. No child coordinators (D-026), no tab bar (D-021).
+  - `private(set) var path: [Route]`
+  - `private(set) var sheet: Sheet?`
+- **One `NavigationStack(path:)`** rooted at Home, with `.navigationDestination(for: Route.self)` and `.sheet(item:)`.
+- **It is the only place that builds view models and views**, from `AppDependencies` (§7.7), using private factory methods:
+  - `makeHome()`
+  - `makeCategory(name:)`
+  - `makeSearchResults(query:)`
+  - `makeProductDetail(id:)`
+  - `makeEnquiry(productId:productTitle:)`
+
+  Its one public view entry is `rootView()`, which `SceneDelegate` hosts.
+
+```swift
+enum Route: Hashable {
+    case category(name: String)
+    case product(id: Int)
+    case searchResults(query: String)
+}
+
+enum Sheet: Identifiable, Hashable {
+    case enquiry(productId: Int, productTitle: String)
+    var id: Self { self }
+}
+```
+
+**One navigator protocol per view model**, with only what that view model needs (D-032). `AppCoordinator` conforms to all five.
+
+```swift
+@MainActor protocol HomeNavigating: AnyObject {
+    func showProduct(id: Int)
+    func showCategory(name: String)
+    func showSearchResults(query: String)
+}
+@MainActor protocol CategoryNavigating: AnyObject {
+    func showProduct(id: Int)
+}
+@MainActor protocol SearchResultsNavigating: AnyObject {
+    func showProduct(id: Int)
+    func showSearchResults(query: String)
+}
+@MainActor protocol ProductDetailNavigating: AnyObject {
+    func showEnquiry(productId: Int, productTitle: String)
+}
+@MainActor protocol EnquiryNavigating: AnyObject {
+    func dismissSheet()
+}
+```
+
+**Thin entry points.** Each protocol method only forwards to one private function in the same file:
+
+| Entry point | Forwards to |
+|---|---|
+| `showProduct(id:)` | `push(.product(id:))` |
+| `showCategory(name:)` | `push(.category(name:))` |
+| `showSearchResults(query:)` | `push(.searchResults(query:))` |
+| `showEnquiry(productId:productTitle:)` | `present(.enquiry(productId:productTitle:))` |
+| `dismissSheet()` | `dismissPresented()` |
+
+- **Only the private functions write `path` and `sheet`:**
+  - The `NavigationStack` gets a binding whose setter calls the private `pop(to:)` when the system shortens the path (Back button or back-swipe).
+  - The sheet binding's setter calls `dismissPresented()` when the system clears it (swipe down).
+- **View models hold their navigator `weak`.** They never reference `AppCoordinator` or `Route`.
+- **Not used:** `NavigationLink(destination:)`, `NavigationLink(value:)`, `isPresented` flags, and navigation state in views or view models. Navigation is always view model intent → navigator → coordinator.
+- **Search** pushes a new `.searchResults` screen on every submit, so Back returns to the previous search (D-037).
+- **No deep links** for now (§12).
+
+### 7.5 Networking
+
+- **All HTTP goes through `NetworkClient`**, images included.
+  - Only `URLSessionNetworkClient` uses `URLSession`, `URLRequest` or `JSONDecoder` for network calls.
+  - Requests are `Endpoint` values (method, path, query items, body), built in `Endpoints.swift`.
+  - URLs are built with `URLComponents` and `URLQueryItem`, never by joining strings.
+- **The session** is created once in the composition root (§7.7):
+  - `timeoutIntervalForRequest` = `REQUEST_TIMEOUT_SECONDS`;
+  - **`waitsForConnectivity = false`**, so offline fails fast as `.offline`;
+  - **`urlCache = nil`**, because images are cached once, in `HybridImageProvider` (§7.6).
+
+```swift
+protocol NetworkClient: Sendable {
+    func send<Response: Decodable & Sendable>(_ endpoint: Endpoint, as type: Response.Type) async throws(APIError) -> Response
+    func data(for endpoint: Endpoint) async throws(APIError) -> Data   // raw bytes, for images
+}
+```
+
+| Endpoint | Request |
+|---|---|
+| `featured` | `GET /products/featured` |
+| `products(ProductQuery)` | `GET /products` with only the non-empty query fields |
+| `product(id:)` | `GET /products/{id}` |
+| `productImage(id:)` | `GET /products/{id}/image` |
+| `categories` | `GET /categories` |
+| `category(name:)` | `GET /categories/{category}`, path-encoded |
+| `createEnquiry(EnquiryRequest)` | `POST /enquiries`. `EnquiryRequest.productId` is a Swift `Int`, so it is encoded as a positive integer JSON number (`7`, never `"7"` or `7.5`). The backend returns 400 for anything else (§6.9). |
+
+- **`ProductQuery`** mirrors §6.4, with every field optional (`q`, `category`, `minPrice`, `maxPrice`, `minRating`, `sort`, `page`, `pageSize`).
+  - The search screen sends `q` only, trimmed (text search only, D-008).
+  - `page` and `pageSize` are left out, so the backend defaults apply (D-024).
+- **`Endpoint` and `Endpoints` never send empty values.**
+  - A `nil` field is omitted, and so is a string that is empty after trimming.
+  - The backend rejects present-but-empty params with 400 (§6.4), so the app never produces `?q=` or `?category=`.
+  - In the enquiry body, a blank `message` is omitted.
+
+`APIError` is typed and `Equatable`:
+
+| Case | From |
+|---|---|
+| `.validation(message:)` | 400 `VALIDATION_ERROR` |
+| `.notFound` | 404 `NOT_FOUND` |
+| `.upstream` | 502 `UPSTREAM_ERROR` |
+| `.server(status:)` | 500 `INTERNAL_ERROR`, or any other non-2xx or unknown envelope |
+| `.offline` | `URLError` not connected or connection lost |
+| `.timeout` | `URLError.timedOut` |
+| `.cancelled` | `URLError.cancelled` or `CancellationError`. The screen was left. Never shown, and view models ignore it. |
+| `.decoding` | The response body doesn't decode |
+| `.transport` | Any other `URLError` |
+
+**`ErrorMessages`** is one pure function, `message(for: APIError) -> String`, that turns an error into user-facing text. The text lives in `Strings` (§7.9), and raw errors are never shown.
+
+| Error | Message |
+|---|---|
+| `.offline` | "You're offline. Check your connection and try again." |
+| `.timeout` | "The server took too long to respond. Please try again." |
+| `.upstream` | "We can't reach the catalogue right now. Please try again in a moment." |
+| `.validation` | "Please check your details and try again." |
+| `.notFound` | "This item is no longer available." This only shows where a screen doesn't treat 404 as empty (§7.8). |
+| `.server`, `.decoding`, `.transport` | "Something went wrong. Please try again." |
+
+### 7.6 Images (`HybridImageProvider`)
+
+```swift
+protocol ImageProvider: Sendable {
+    func image(forProductId id: Int) async throws -> UIImage
+}
+```
+
+**`HybridImageProvider`** is an `actor`, and `image(forProductId:)` is its only public function. Everything else is private (D-034).
+
+- **Built by the composition root** (§7.7) with:
+  - the `NetworkClient`;
+  - the cache folder (`Caches/ProductImages/`);
+  - a `NotificationCenter`;
+  - its limits: about **100** images in memory, **50 MB** on disk, and a short disk-write delay.
+- **Lookup:** memory → disk → network.
+  - A disk hit is also put in memory.
+  - A downloaded image goes to memory at once, and to disk shortly after (below).
+  - Network fetches use `Endpoints.productImage(id:)` through `NetworkClient.data(for:)`. Bytes that don't decode to an image throw.
+- **One download per image:** two requests for the same id share one in-flight `Task`.
+- **Memory:** an `NSCache` with `countLimit = 100`. It's "about 100" because `NSCache` may evict earlier under memory pressure.
+- **Launch preload:**
+  - At launch, a background task loads the persisted images into memory, newest first, up to the memory limit.
+  - It yields between files, so `image(forProductId:)` calls are served meanwhile. Home is never delayed by it.
+- **Writing to disk:**
+  - Each downloaded image is written shortly after download, with pending writes batched.
+  - Anything still pending is flushed when the app goes to the background (`UIApplication.didEnterBackgroundNotification`). The provider subscribes to it privately in `init`, so the single public function stays the only one.
+  - Nothing relies on an exit callback, because iOS often terminates suspended apps without one.
+- **Disk:**
+  - One file per product id in `Caches/ProductImages/`, holding the bytes as received.
+  - Capped at about **50 MB**. When a write takes it over the cap, the oldest files (by modification date) are removed first.
+  - **No expiry.** iOS may also purge the Caches folder at any time.
+- **Errors:** disk problems are never fatal. A failed read counts as a miss, and a failed write is dropped. Network errors are rethrown.
+
+**Tile images are driven by the view model** (D-022):
+- Each view model that shows images owns a `ProductImageLoader` (`@MainActor @Observable`), which calls `ImageProvider` and keeps one state per product id: `loading`, `loaded(UIImage)` or `failed`.
+- The view reports that a tile appeared (`viewModel.tileAppeared(id:)`). It renders `viewModel.imageState(for:)` as a placeholder, the image, or a "failed" icon.
+- Each id is requested once per screen.
+- The product detail image works the same way.
+
+### 7.7 Launch, configuration and DI
+
+**Launch.** The app uses the UIKit lifecycle and hosts SwiftUI (D-030):
+
+1. **`@main final class AppDelegate`** does nothing beyond the default scene setup. `Info.plist`'s `UIApplicationSceneManifest` names `SceneDelegate`.
+2. **`SceneDelegate.scene(_:willConnectTo:options:)`** creates the window and calls `AppBootstrapper.configure()`.
+3. **`AppBootstrapper`** (`@MainActor`) is its own type, so it can be tested. `configure()`:
+   1. loads `AppConfiguration` from the info dictionary it was given;
+   2. builds `AppDependencies.live(configuration)`;
+   3. builds `AppCoordinator(dependencies:)`.
+
+   It returns `.ready(AppCoordinator)` or `.configurationError(message)`.
+4. **On success**, the window's root is a `UIHostingController` with `coordinator.rootView()`: Home, with the theme injected. **On failure**, the root is a `UIHostingController` with `ConfigurationErrorView`. `SceneDelegate` keeps the coordinator alive.
+
+- **No network calls before the UI.** The bootstrapper only reads `Info.plist` and builds objects.
+- **No splash.** Home's spinner is the launch state.
+- **No refresh** when the app comes back from the background (§12).
+
+**Configuration.**
+- **`AppConfiguration { apiBaseURL: URL, requestTimeout: TimeInterval }`** is built once, from `Info.plist`:
+  - `API_BASE_URL = $(API_BASE_URL)`
+  - `REQUEST_TIMEOUT_SECONDS = $(REQUEST_TIMEOUT_SECONDS)`
+- It is the only code that reads those values. There's no URL or timeout in Swift source.
+- A missing or invalid value makes it throw:
+  - the URL isn't absolute `http`/`https` with a host;
+  - or the timeout isn't a positive number.
+
+**Build configurations and schemes** (D-039):
+
+| Configuration | Shared scheme | xcconfig | `API_BASE_URL` | `REQUEST_TIMEOUT_SECONDS` | Plain HTTP |
+|---|---|---|---|---|---|
+| **Debug** | `ANSR Debug` | `Config/Debug.xcconfig` | `http://localhost:3000` | `15` | Allowed to `localhost` only: `NSAllowsLocalNetworking` |
+| **Prod** | `ANSR Prod` | `Config/Prod.xcconfig` | `https://api.example.com` (a placeholder until real environments exist) | `15` | None. HTTPS only, no ATS exception. |
+
+- **Prod** replaces the template's Release configuration. It is optimised and has no `DEBUG` flag.
+- **Schemes:** both are shared (`xcshareddata`), so a fresh clone has them.
+  - Run and Archive use the scheme's own configuration.
+  - Test uses Debug in both, since tests use test doubles and never the URL.
+- **xcconfig syntax:** `//` starts a comment in an xcconfig, so URLs are written as `http:/$()/localhost:3000`.
+- **Checking ATS:** the local-networking exception exists only in the Debug build. Check this by running `plutil -p` on each built app's `Info.plist`.
+- **Signing:** no `DEVELOPMENT_TEAM`, simulator only.
+
+**Dependency injection.**
+- **`AppDependencies`** exposes **protocols only**:
+  - `productRepository`, `categoryRepository`, `enquiryRepository` and `imageProvider`;
+  - plus `theme: AppTheme` and `locale: Locale`.
+- **`AppDependencies.live(_:)`** is the **composition root**: the only place concrete types are created.
+  - `URLSession`, `URLSessionNetworkClient` and the `Remote…Repository` types.
+  - `HybridImageProvider`, with its limits.
+  - The standard `AppTheme`.
+- **`AppDependencies.mock`** (Debug only) uses mock repositories for previews.
+- **The coordinator** gets `AppDependencies` and passes each view model only the protocols it needs (§7.10). Views never reach for dependencies themselves.
+- **Previews** use the real view model with mock repositories (D-014).
+- **Tests** build view models directly with test doubles, never the live client (§9.2).
+
+### 7.8 Screens
+
+| Screen | Route | View model | Data | Empty state | Intents |
+|---|---|---|---|---|---|
+| **Home** (root) | none (root) | `HomeViewModel` | `featured()` and `categories()` in parallel → `ViewState<HomeViewData>` | Both lists empty: "No products to show right now." | tile → `showProduct`; category row → `showCategory`; search submit → `showSearchResults` |
+| **Category** | `.category(name:)` | `CategoryViewModel` | `category(name)` → `ViewState<CategoryViewData>` | 404: "This category is no longer available." | tile → `showProduct` |
+| **Search results** | `.searchResults(query:)` | `SearchResultsViewModel` | `search(ProductQuery(q:))` → `ViewState<SearchResultsViewData>` | No results: "No products match '{q}'." | search submit → `showSearchResults`; tile → `showProduct` |
+| **Product detail** | `.product(id:)` | `ProductDetailViewModel` | `product(id:)` → `ViewState<ProductDetailViewData>` | 404: "This product is no longer available." | Enquire → `showEnquiry` |
+| **Enquiry** (sheet) | `Sheet.enquiry` | `EnquiryViewModel` | `submit(EnquiryRequest)` | none: it's a form (§7.8.5) | submit; Done → `dismissSheet` |
+
+Every screen except Enquiry uses the states and loading rules in §7.11. Any error other than the 404s above shows the error state with Retry.
+
+**The search field** is the same on Home and Search results:
+- It is always visible: `.searchable(text:placement: .navigationBarDrawer(displayMode: .always))`, with the prompt "Search products". The text lives in the view model.
+- It submits with `.onSubmit(of: .search)` and passes the trimmed text.
+- **Search is disabled while the trimmed text is empty:**
+  - The keyboard's Search key is disabled while the field is empty, which is the system default.
+  - The view model's `canSearch` is `false` for whitespace-only text, so a submit then does nothing: no navigation and no request.
+
+#### 7.8.1 Home
+
+Layout: D-035.
+
+- **Title:** a large navigation title, "Catalogue".
+- **Search field:** always visible (above).
+- **"Top rated":** the 5 featured products (AC-1), in API order, as a horizontal row of tiles.
+- **"Categories":** one row per category, with a chevron.
+  - The row shows the name capitalised.
+  - A tap opens the category by its name as the data spells it.
+- **No "all products" section.**
+- **Loading:**
+  - `featured()` and `categories()` run in parallel. The screen is loaded once both succeed.
+  - **If either fails, the whole screen shows the error with Retry** (D-036). There are no partial results.
+  - If one list is empty, its section is hidden. If both are empty, the screen shows the empty state.
+
+#### 7.8.2 Category
+
+- **Title:** the category name, capitalised.
+- **"Top rated":** `topRated` (up to 3), as a horizontal row of tiles, in API order (AC-2).
+- **"More in {Category}":** `rest`, as a 2-column grid, in API order. **The section is hidden when `rest` is empty.**
+- **404** shows the empty state "This category is no longer available."
+
+#### 7.8.3 Search results
+
+- **Search field:** prefilled with the query.
+- **Request:** `search(ProductQuery(q: query))`. Only `q` is sent, because the app does text search only (§6.4, D-008).
+- **Loaded state:**
+  - A summary: "{n} results for '{q}'", or "1 result for '{q}'" when `n` is 1. `n` is `total`.
+  - Below it, a 2-column grid of exactly the returned products, in API order.
+- **Empty** (`total` is 0): "No products match '{q}'."
+- **Searching again** pushes a **new** results screen, and Back returns to the previous one (D-037).
+
+#### 7.8.4 Product detail
+
+- **Fetching:** the product is fetched by id (D-012).
+- **Layout,** in a scroll view:
+  - a large image (§7.6);
+  - title, price and rating;
+  - category, capitalised;
+  - description.
+- **"Enquire"** is pinned at the bottom (a bottom safe-area inset) and shows only in the loaded state. It calls `showEnquiry(productId:productTitle:)`.
+- **404** shows the empty state "This product is no longer available." (D-024).
+
+#### 7.8.5 Enquiry sheet
+
+- **Presentation:** a sheet over Product detail. It shows the product title and three fields: name, email (email keyboard, no autocorrection or autocapitalisation) and message (multi-line, optional).
+- **Field values live in the view model.**
+- **Validation mirrors §6.9.** The backend stays the final judge.
+
+| Field | Rule |
+|---|---|
+| `name` | Required. Trimmed, 1–100 characters, no line breaks. |
+| `email` | Required. Trimmed, a valid email shape (`local@domain.tld`, no spaces), at most 254 characters. |
+| `message` | Optional. At most 2000 characters, line breaks allowed. Omitted from the request when blank. |
+| `productId` | A Swift `Int` taken from the sheet, sent as a JSON number (§7.5). |
+
+- **Submit** is enabled only while the form is valid and not submitting. Invalid input never sends a request.
+- **States:** `editing` → `submitting` → `submitted` or `failed(message)` (D-038):
+
+| State | Shows |
+|---|---|
+| `editing` | The form. Submit is enabled when the form is valid. |
+| `submitting` | The form disabled, with progress on Submit. **Swipe-to-dismiss is blocked** (`interactiveDismissDisabled`). |
+| `submitted` | The thank-you message: "Thank you, {name}. Our sales team will reply to {email} soon." It uses the trimmed values. **Done** calls `dismissSheet()`. |
+| `failed(message)` | The form, **with everything the user typed kept**, the message from `ErrorMessages`, and Submit enabled again. |
+
+### 7.9 Theme, text and formatting
+
+- **`AppTheme`** holds every colour, font, spacing value, corner radius and image size as tokens.
+  - Colours are **system semantic colours** (background, secondary background, primary and secondary text, accent, placeholder), so dark mode works.
+  - Fonts are system text styles.
+  - The theme is a value injected once at the root through a SwiftUI environment key, from `AppDependencies` (D-023).
+  - No hardcoded colours, fonts or spacing in views.
+- **Text:** all user-facing text lives in one file, `Shared/Strings.swift`.
+  - It holds plain constants, plus functions for text with values in it, such as `searchSummary(count:query:)`.
+  - English only, with no translations and no String Catalog.
+- **Formatting:** pure functions in `Shared/Formatters.swift`. The `Locale` is always passed in, and `Locale.current` is never read inside.
+  - **Price** with its currency: `priceText(_:currencyCode:locale:)` gives `$109.95` for `en_US`.
+  - **Rating:** `ratingText(_:locale:)` gives `4.5 ★ (120)`, with the rate to one decimal place.
+  - **Category names, capitalised:** `categoryTitle(_:locale:)` gives `Men's Clothing`.
+- **Accessibility is not required** for the proof of concept (D-041). There are no custom accessibility labels or VoiceOver work. System controls and text styles give the default behaviour.
+
+### 7.10 Repositories
+
+One protocol per repository, each named for its role. `Remote…Repository` structs hold an `any NetworkClient`. Each method calls one `Endpoint` and unwraps `ItemsResponse` where the API wraps a list. They hold no cache and no UI state (D-033).
+
+```swift
+protocol ProductRepository: Sendable {
+    func featured() async throws(APIError) -> [Product]
+    func search(_ query: ProductQuery) async throws(APIError) -> ProductPage
+    func product(id: Int) async throws(APIError) -> Product
+}
+
+protocol CategoryRepository: Sendable {
+    func categories() async throws(APIError) -> [String]
+    func category(_ name: String) async throws(APIError) -> CategoryProducts
+}
+
+protocol EnquiryRepository: Sendable {
+    func submit(_ enquiry: EnquiryRequest) async throws(APIError) -> EnquiryResponse
+}
+```
+
+View models get only what they use:
+
+| View model | Repositories and providers | Navigator |
+|---|---|---|
+| `HomeViewModel` | `ProductRepository`, `CategoryRepository`, `ImageProvider` | `HomeNavigating` |
+| `CategoryViewModel` | `CategoryRepository`, `ImageProvider` | `CategoryNavigating` |
+| `SearchResultsViewModel` | `ProductRepository`, `ImageProvider` | `SearchResultsNavigating` |
+| `ProductDetailViewModel` | `ProductRepository`, `ImageProvider` | `ProductDetailNavigating` |
+| `EnquiryViewModel` | `EnquiryRepository` | `EnquiryNavigating` |
+
+### 7.11 Screen states and shared UI
 
 ```swift
 enum ViewState<Value> {
@@ -586,109 +996,18 @@ enum ViewState<Value> {
 }
 ```
 
-### 7.4 Coordinator and navigation
-
-- One `AppCoordinator` (`@Observable`, `@MainActor`) owns all navigation state: `path: [Route]` and `sheet: Sheet?`. No child coordinators (D-026). It can be split per flow later, e.g. checkout.
-- It is the only place that creates screens and ViewModels, from `AppDependencies`. New screens = a new `Route`/`Sheet` case + a factory branch in the coordinator.
-- No `NavigationLink(destination:)`, `isPresented` flags or navigation state in views or ViewModels.
-- ViewModels navigate only through `CatalogueNavigating`; they never reference `AppCoordinator`, `Route` or other screens.
-- Single `NavigationStack` rooted at Home (no tab bar), with `.navigationDestination(for: Route.self)` and `.sheet(item:)` bound to the coordinator.
-
-```swift
-enum Route: Hashable {
-    case category(String)
-    case product(id: Int)
-    case searchResults(query: String)
-}
-
-enum Sheet: Identifiable {
-    case enquiry(productId: Int, productTitle: String)
-}
-
-@MainActor
-protocol CatalogueNavigating: AnyObject {
-    func showCategory(_ category: String)
-    func showProduct(id: Int)
-    func showSearchResults(query: String)
-    func showEnquiry(productId: Int, productTitle: String)
-    func dismissSheet()
-}
-```
-
-### 7.5 Networking
-
-- All HTTP goes through the central `NetworkClient`, images included. Nothing else uses `URLSession`, `URLRequest` or `JSONDecoder` for network calls.
-- Requests are `Endpoint` values (method, path, query items, body) defined in `Endpoints.swift`. URLs are built with `URLComponents` / `URLQueryItem`, never string concatenation.
-
-```swift
-protocol NetworkClient: Sendable {
-    func send<Response: Decodable & Sendable>(_ endpoint: Endpoint, as type: Response.Type) async throws(APIError) -> Response
-    func data(for endpoint: Endpoint) async throws(APIError) -> Data   // raw bytes, e.g. images
-}
-```
-
-| Endpoint | Request |
-|---|---|
-| `featured` | `GET /products/featured` |
-| `products(ProductQuery)` | `GET /products` + only the non-nil query fields |
-| `product(id:)` | `GET /products/{id}` |
-| `productImage(id:)` | `GET /products/{id}/image` |
-| `categories` | `GET /categories` |
-| `category(_:)` | `GET /categories/{category}` (path-encoded) |
-| `createEnquiry(EnquiryRequest)` | `POST /enquiries`. `EnquiryRequest.productId` is a Swift `Int`, so it is encoded as a positive integer JSON number (`7`, never `"7"` or `7.5`). The backend returns 400 for anything else (§6.9). |
-
-`ProductQuery` mirrors §6.4 with every field optional (`q`, `category`, `minPrice`, `maxPrice`, `minRating`, `sort`, `page`, `pageSize`). The search screen currently sends `q` only; no sort/filter UI yet.
-
-**Endpoints never sends empty values.** A `nil` field is omitted, and so is a string that is empty after trimming. The backend rejects present-but-empty params with 400 (§6.4), so the app must never produce `?q=` or `?category=`.
-
-`APIError` (typed, `Equatable`):
-
-| Case | From |
-|---|---|
-| `.validation(message:)` | 400 `VALIDATION_ERROR` |
-| `.notFound` | 404 `NOT_FOUND` |
-| `.upstream` | 502 `UPSTREAM_ERROR` |
-| `.server(status:)` | 500 `INTERNAL_ERROR` or any other non-2xx / unknown envelope |
-| `.offline` | `URLError` not connected / connection lost |
-| `.timeout` | `URLError.timedOut` |
-| `.decoding` | response body doesn't decode |
-| `.transport` | any other `URLError` |
-
-ViewModels turn `APIError` into user-facing text through one pure function in `Shared/ErrorMessages.swift`; raw errors are never shown.
-
-### 7.6 Images
-
-- `ImageService.image(forProductId:) async throws(APIError) -> UIImage` loads `productImage(id:)` through `NetworkClient` and keeps decoded images in an `NSCache` owned by the service instance (created in `AppDependencies`).
-- To keep "views never call services": a `ProductImageLoader` (`@Observable`, `@MainActor`, holds `[Int: ImageState]`) is owned by each ViewModel that shows tiles. Views forward a "tile appeared" intent (`viewModel.loadImage(for:)`) and render `viewModel.imageState(for:)` (loading placeholder / image / failed placeholder).
-
-### 7.7 Configuration and DI
-
-- `AppConfiguration` is loaded once at launch from `Info.plist`: `API_BASE_URL` and `REQUEST_TIMEOUT_SECONDS`, set through `Config/*.xcconfig`. Debug uses `http://localhost:3000`. No backend URL or timeout in Swift source.
-- Invalid or missing config → `AppConfiguration` throws; the app shows a plain configuration-error screen instead of crashing.
-- `Info.plist` sets `NSAppTransportSecurity › NSAllowsLocalNetworking = YES` so plain HTTP works against `localhost` only.
-- `AppDependencies` is built once in the `@main` `App` from `AppConfiguration` and injected into `AppCoordinator`. Views never reach for dependencies themselves. `AppDependencies.mock` is the test graph.
-- **Previews** use the real ViewModel with mock services. **Tests** use `AppDependencies.mock`, mock services and a mock navigator, never the live client.
-
-### 7.8 Screens
-
-| Screen | Data | States | Intents |
-|---|---|---|---|
-| **Home** (root) | `featured` + `categories` loaded concurrently → `ViewState<HomeContent>` | loading / loaded / empty (no featured and no categories) / error+retry | tap tile → `showProduct`; tap category → `showCategory`; `.searchable` + `.onSubmit(of: .search)` → `showSearchResults`. Search stays disabled while the trimmed text is empty (see below). |
-| **Category** | `category(_:)` → `ViewState<CategoryProducts>` | sections "Top rated" and "More in {category}" (second hidden when empty); empty; error+retry | tap tile → `showProduct` |
-| **Search results** | `products(ProductQuery(q:))` → `ViewState<ProductPage>` | loaded list; empty = "No products match '{q}'"; error+retry | `.searchable` prefilled with the query; resubmitting reloads in place; search disabled while the trimmed text is empty; tap tile → `showProduct` |
-
-**Search stays disabled while the trimmed text is empty.**
-- The keyboard's Search key is disabled while the field is empty, which is the system default for `.searchable`.
-- The ViewModel's `canSearch` is `false` for whitespace-only text, so submitting does nothing and no request is sent.
-| **Product detail** | `product(id:)` → `ViewState<Product>` | loaded; **empty = 404 "This product is no longer available"**; error+retry | "Enquire" → `showEnquiry` |
-| **Enquiry** (sheet) | `createEnquiry` | form state: `editing` → `submitting` → `submitted` (thank-you) or `failed(message)` | client-side validation mirrors §6.9 (submit disabled until valid); submit; on thank-you "Done" → `dismissSheet` |
-
-Thank-you copy: "Thank you, {name}. Our sales team will reply to {email} soon."
-Price display: formatted in the ViewModel with the product's `currency`.
-
-### 7.9 Theme
-
-`AppTheme` holds all colors, fonts, spacing and corner radii as tokens. It is a value passed into the view tree through a SwiftUI environment key, set once at the root from `AppDependencies`, so a new look and feel = a new `AppTheme` value. No hardcoded colors, fonts, spacing or radii in views.
+- **There is no idle state:** every screen loads on appear, so a view model starts in `.loading`.
+- **`StateContainerView(state:emptyMessage:retry:content:)`** is shared by all screens. It shows:
+  - a spinner while loading;
+  - the screen's message when empty;
+  - the message with a **Retry** button on error;
+  - the content when loaded.
+- **Loading rules:**
+  - **Loading starts in `.task`** (`await viewModel.load()`) and is cancelled automatically when the screen is left. A cancelled load changes nothing on screen (`.cancelled` is ignored).
+  - **A second `load()` while one is running is ignored.** So is a `load()` once the screen is loaded or empty, which means going Back to Home doesn't reload it. A load that was cancelled before it finished runs again on the next appearance.
+  - **`retry()`** sets `.loading`, so the spinner shows again, and then loads.
+- **`ProductTileView`** renders `ProductTileViewData` and an image state (placeholder, image, or "failed" icon). It reports its appearance so the view model can load the image (§7.6).
+- **`ConfigurationErrorView`** shows a fixed message with no Retry, because configuration is fixed at build time.
 
 ---
 
@@ -697,7 +1016,7 @@ Price display: formatted in the ViewModel with the product's `currency`.
 ### 8.1 Prerequisites
 
 - Docker with **Compose 2.24 or newer** (Docker Desktop, OrbStack or Colima), needed for the optional `env_file` used below.
-- **Xcode 16 or newer** (built with Xcode 26) and an iOS 18+ simulator.
+- **Xcode 16 or newer** (built with Xcode 26) and an iOS 18+ simulator. No Apple developer account: the app has no development team and runs on the simulator only (§7.7).
 - Optional, for running backend tests outside Docker: Node.js 24 (`.nvmrc`).
 
 ### 8.2 Run (target: under 10 minutes)
@@ -716,7 +1035,12 @@ docker compose up --build
 - API: http://localhost:3000 (`/health` to check)
 - Mailpit inbox UI: http://localhost:8025 (SMTP on 1025)
 
-Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug config already points at `http://localhost:3000`.
+**iOS app**, with the backend running:
+1. Open `iOS/ANSR/ANSR.xcodeproj`.
+2. Choose the **`ANSR Debug`** scheme and an iPhone simulator (iOS 18+).
+3. Run (⌘R). Debug already points at `http://localhost:3000`.
+
+The **`ANSR Prod`** scheme uses the placeholder `https://api.example.com` and allows HTTPS only, so it can't reach the local backend. Until a real environment exists it shows Home's error state (§7.7).
 
 `docker-compose.yml` services:
 - `api` — built from `backend/Dockerfile`, env from `.env.example` then the optional `.env`, port `${PORT:-3000}`, depends on `mailpit`, healthcheck on `/health`.
@@ -745,9 +1069,9 @@ The root `README.md` (written in the backend PR, completed in the iOS PR) covers
 - **Quick start:** the one command in §8.2 (`.env` optional, for overrides only), and where to see the enquiry email (Mailpit at http://localhost:8025).
 - **Running tests:**
   - backend: `cd backend && npm ci && npm test` (Node 24), or with Docker only: `docker build --target test backend`
-  - iOS: ⌘U in Xcode, or `xcodebuild test` with a simulator destination
+  - iOS: ⌘U in Xcode with the `ANSR Debug` scheme, or `xcodebuild test -project iOS/ANSR/ANSR.xcodeproj -scheme "ANSR Debug" -destination 'platform=iOS Simulator,name=<an iPhone simulator>'`
 - Configuration: a pointer to `.env.example` and §5.10.
-- Troubleshooting: ports 3000, 8025 or 1025 already in use; the simulator can't reach the backend because the API isn't running.
+- Troubleshooting: ports 3000, 8025 or 1025 already in use; the simulator can't reach the backend because the API isn't running or the `ANSR Prod` scheme is selected.
 
 ---
 
@@ -778,26 +1102,43 @@ Tests never sleep. Time moves through an injected fake clock, and background wor
 
 ### 9.2 iOS (Swift Testing)
 
-| Area | How | Must cover |
-|---|---|---|
-| `NetworkClient` | Stub `URLProtocol` | decoding; query items (only non-nil `ProductQuery` fields); path encoding of categories; envelope → `APIError` per code; offline/timeout/decoding mapping; raw data for images |
-| Services | Mock `NetworkClient` | correct `Endpoint` per call; model mapping |
-| ViewModels | Mock services + mock navigator | Loading → Loaded / Empty / Error; retry; navigation intents call the right navigator method; search submit (blank ignored); product 404 → empty; enquiry validation, submitting, thank-you, failure message, done → `dismissSheet` |
-| `ErrorMessages` | Unit | every `APIError` → a user-facing message |
-| `AppCoordinator` | Assert on `path` / `sheet` | each navigator method; dismiss clears sheet |
-| `AppConfiguration` | Unit with test dictionaries | valid, missing and invalid `API_BASE_URL` / timeout |
+The iOS tests cover only what proves AC-1…AC-5, plus the coordinator navigation those flows use (D-040). They are written with Swift Testing in `ANSRTests`.
+
+- **No UI or snapshot tests.**
+- **No real network:**
+  - View models get recording test doubles of the repository protocols, `ImageProvider` and their navigator.
+  - The network client runs on a session with a stub `URLProtocol`.
+- **No sleeps:**
+  - Tests await the view model's `async` intents directly.
+  - An in-between state (`submitting`) is observed by holding a test double's reply with a continuation until after the assertion.
+
+| Area | AC | How | Must cover |
+|---|---|---|---|
+| `URLSessionNetworkClient` + `Endpoints` | AC-3, and all calls | Stub `URLProtocol` | **Search sends only non-empty params:**<br>• `ProductQuery(q: " bag ")` gives `/products?q=bag`;<br>• `nil` fields and a blank or whitespace `q` are omitted.<br>**Errors map correctly:**<br>• 400 → `.validation`, 404 → `.notFound`, 502 → `.upstream`, 500 or an unknown body → `.server`;<br>• not connected → `.offline`, timed out → `.timeout`, a body that doesn't decode → `.decoding`. |
+| `HomeViewModel` | AC-1 (plus the AC-2 and AC-3 entry points) | Mock product and category repositories, mock `ImageProvider`, recording `HomeNavigating` | • `loading` → `loaded` with the 5 featured products as tiles, in API order, with formatted price and rating;<br>• categories capitalised;<br>• either request failing → `error`, then `retry()` → `loading` → `loaded`;<br>• a tile tap → `showProduct(id:)`;<br>• a category tap → `showCategory(name:)` with the data's spelling;<br>• a submit → `showSearchResults(query:)` with trimmed text;<br>• a blank or whitespace submit → no navigation. |
+| `CategoryViewModel` | AC-2 | Mock category repository, recording `CategoryNavigating` | • `topRated` first, then `rest`, each in API order;<br>• no "More in" section when `rest` is empty;<br>• 404 → `empty` with "This category is no longer available.";<br>• a tile tap → `showProduct(id:)`. |
+| `SearchResultsViewModel` | AC-3 | Mock product repository, recording `SearchResultsNavigating` | • the repository receives a `ProductQuery` with only `q` set to the term;<br>• exactly the returned products are shown, with the "{n} results for '{q}'" summary;<br>• 0 results → `empty` with "No products match '{q}'.";<br>• a new submit → `showSearchResults(query:)`, and a blank one is ignored. |
+| `ProductDetailViewModel` | AC-4 | Mock product repository, recording `ProductDetailNavigating` | • it loads `product(id:)` for its id;<br>• it maps title, price, rating, category and description;<br>• 404 → `empty`;<br>• Enquire → `showEnquiry(productId:productTitle:)`. |
+| `EnquiryViewModel` | AC-5 | Mock enquiry repository (succeeds, fails or holds), recording `EnquiryNavigating` | **Valid:**<br>• `editing` → `submitting` → `submitted` with the thank-you text;<br>• the request has `productId` as an `Int` and trimmed fields.<br>**Invalid** (blank name, a line break in the name, a bad email, over a length limit):<br>• Submit is disabled and no request is made.<br>**Failure:**<br>• `failed(message)`, every field kept, Submit enabled again.<br>**Done** → `dismissSheet()`. |
+| `AppCoordinator` | Navigation for AC-1…AC-5 | The real coordinator with `AppDependencies.mock` | • `showProduct`, `showCategory` and `showSearchResults` push the right `Route`;<br>• two searches push two screens;<br>• the path binding shortening the path pops;<br>• `showEnquiry` presents the sheet, and `dismissSheet` clears it. |
+
+**Manual walkthrough before the iOS PR:** walk through AC-1…AC-5 by hand on **both schemes** (D-040).
+- **`ANSR Debug`:** against the local backend from §8.2, with the enquiry email visible in Mailpit.
+- **`ANSR Prod`:** the same walkthrough against a reachable HTTPS backend.
+  - Prod's URL is a placeholder until real environments exist, so this part is **blocked** until then.
+  - The PR states that it's blocked.
 
 ### 9.3 Critical path traceability
 
 | AC | Backend tests | iOS tests |
 |---|---|---|
-| AC-1 | `selectFeatured`, `GET /products/featured` | HomeViewModel |
-| AC-2 | `splitTopRated`, `GET /categories`, `GET /categories/{c}` | HomeViewModel (category tap), CategoryViewModel |
-| AC-3 | `matchesText`, engine, `GET /products` | SearchResultsViewModel, Endpoints query items |
-| AC-4 | `GET /products/{id}`, image route | ProductDetailViewModel, ImageService |
-| AC-5 | `buildEnquiryEmail`, `POST /enquiries`, `SmtpEmailService` | EnquiryViewModel, coordinator sheet |
+| AC-1 | `selectFeatured`, `GET /products/featured` | `HomeViewModel`, `AppCoordinator` (`showProduct`) |
+| AC-2 | `splitTopRated`, `GET /categories`, `GET /categories/{c}` | `HomeViewModel` (category tap), `CategoryViewModel`, `AppCoordinator` (`showCategory`) |
+| AC-3 | `matchesText`, engine, `GET /products` | `URLSessionNetworkClient` (non-empty params only), `HomeViewModel` (submit), `SearchResultsViewModel`, `AppCoordinator` (a push per search) |
+| AC-4 | `GET /products/{id}`, image route | `ProductDetailViewModel`, `AppCoordinator` (`showProduct`) |
+| AC-5 | `buildEnquiryEmail`, `POST /enquiries`, `SmtpEmailService` | `EnquiryViewModel`, `AppCoordinator` (sheet) |
 
-Manual end-to-end check before each PR: run §8.2, walk AC-1…AC-5 in the simulator, see the email in Mailpit.
+Manual end-to-end check before each PR: run §8.2, walk AC-1…AC-5 in the simulator, see the email in Mailpit. For the iOS PR, do this on both schemes (§9.2).
 
 ---
 
@@ -840,6 +1181,13 @@ None open.
 
 - **Tuist for the iOS project:** generate the project from a Swift manifest, so there are no `.xcodeproj` merge conflicts, and split it into modules (`Core`, `Networking`, `DesignSystem`, `Features`).
 - **Cursor-based paging for search:** today paging is offset-based (`page`, `pageSize`), so items can shift between pages if the catalogue refreshes mid-browse. A cursor (for example, the last item's sort key and id) keeps pages stable.
+- **iOS, recorded but not built** (D-030, D-035, D-036):
+  - **Deep links**, mapped to `Route` values by the coordinator.
+  - **Pull-to-refresh** on the screens that load data.
+  - **Refresh on foreground** when the app comes back from the background.
+  - **Partial Home results:** show whichever of featured or categories loaded, instead of a full-screen error.
+  - **A `ScreenFactory`** split out of `AppCoordinator`, so the coordinator only navigates.
+  - **Push notification setup** in the `AppDelegate`.
 - See `DECISIONS.md` → "What I'd do next" and "How it grows".
 
 ---
@@ -865,3 +1213,4 @@ None open.
 | 0.15 | 2026-11-26 | One-command start: Compose loads `.env.example` as defaults and an optional `.env` for overrides, so `docker compose up --build` works from a fresh clone. Needs Compose 2.24+ (§3, §5.10, §8.1, §8.2, §8.4; D-029). |
 | 0.16 | 2026-11-26 | Linked the reader guides `BACKEND_ARCHITECTURE.md` and `API_CONTRACT.md` from the header. They explain and link to this blueprint, which stays the single source of truth. |
 | 0.17 | 2026-11-26 | Drift fix (docs only): §5.2 describes `TtlCache.ts` as stale-while-revalidate with retry back-off and the 24 h cap, matching the code since v0.7. |
+| 0.18 | 2026-11-26 | iOS design (docs only). §7 rewritten:<br>• the project at `iOS/ANSR/ANSR.xcodeproj` with targets `ANSR` and `ANSRTests` (no UI tests), Swift 6 with default isolation `nonisolated` and Approachable Concurrency off, simulator only;<br>• the UIKit lifecycle hosting SwiftUI through `AppBootstrapper`;<br>• Debug and Prod configurations with shared schemes;<br>• dumb views and two model layers (data models and per-screen view data);<br>• repositories named by role and how (`ProductRepository` / `RemoteProductRepository`, and so on), replacing "services";<br>• `HybridImageProvider` (memory → disk → network);<br>• one navigator protocol per view model, with thin coordinator entry points;<br>• the Home, Category, Search results, Product detail and Enquiry screens;<br>• `ViewState` with no idle state;<br>• formatting, `Strings` and theme rules; accessibility out of scope.<br>The §7.8 screens table is fixed, and 7.10 Repositories and 7.11 Screen states are new. §1 out of scope, §4 overview and layout, §8.1, §8.2 and §8.4 iOS run and test steps, §9.2 requirement-linked iOS tests with a manual walkthrough on both schemes, §9.3 iOS column, and §12 iOS future items are all updated. Header links `FRONTEND_ARCHITECTURE.md`. D-030 to D-041. |

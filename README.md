@@ -6,6 +6,7 @@ A proof of concept for a product catalogue: a SwiftUI iOS app and a Node.js + Ty
 
 - [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md): the single source of truth for what is built (requirements, architecture, API contract, config, tests)
 - [`docs/BACKEND_ARCHITECTURE.md`](docs/BACKEND_ARCHITECTURE.md): a guide to the backend, part by part, linking to the blueprint
+- [`docs/FRONTEND_ARCHITECTURE.md`](docs/FRONTEND_ARCHITECTURE.md): a guide to the iOS app, part by part, linking to the blueprint
 - [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md): a quick reference for API callers
 - [`DECISIONS.md`](DECISIONS.md): why things are the way they are
 - [`AI_USAGE.md`](AI_USAGE.md): how AI was used, the key prompts, and what it got wrong
@@ -44,7 +45,12 @@ Then open http://localhost:8025 to see the email.
 
 ### iOS app
 
-*Added in the iOS PR.* Open `ios/Catalogue.xcodeproj`, pick an iPhone simulator and Run. The Debug configuration points at `http://localhost:3000`.
+*Added in the iOS PR.* With the backend running:
+1. Open `iOS/ANSR/ANSR.xcodeproj`.
+2. Choose the `ANSR Debug` scheme and an iPhone simulator.
+3. Run.
+
+The `ANSR Debug` scheme points at `http://localhost:3000`. No Apple developer account is needed.
 
 ## API at a glance
 
@@ -75,7 +81,7 @@ With Docker only, no local Node needed:
 docker build --target test backend
 ```
 
-**iOS:** press ⌘U in Xcode. *(Added in the iOS PR.)*
+**iOS:** press ⌘U in Xcode with the `ANSR Debug` scheme. *(Added in the iOS PR.)*
 
 ## Configuration
 
