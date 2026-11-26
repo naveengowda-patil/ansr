@@ -12,6 +12,8 @@ enum APIError: Error, Equatable, Sendable {
     case server(status: Int)
     /// Not connected, or the connection was lost.
     case offline
+    /// Online, but the server can't be reached: connection refused, unknown host, or DNS failure.
+    case unreachable
     /// The request timed out.
     case timeout
     /// The screen was left. Never shown; view models ignore it.
@@ -51,6 +53,8 @@ extension APIError {
         switch urlError.code {
         case .notConnectedToInternet, .networkConnectionLost:
             self = .offline
+        case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            self = .unreachable
         case .timedOut:
             self = .timeout
         case .cancelled:

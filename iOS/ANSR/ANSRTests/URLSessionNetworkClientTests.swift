@@ -82,12 +82,15 @@ struct URLSessionNetworkClientTests {
         }
     }
 
-    @Test("Transport failures map to offline, timeout, cancelled or transport", arguments: [
+    @Test("Transport failures map to offline, unreachable, timeout, cancelled or transport", arguments: [
         (URLError.Code.notConnectedToInternet, APIError.offline),
         (URLError.Code.networkConnectionLost, APIError.offline),
+        (URLError.Code.cannotConnectToHost, APIError.unreachable),
+        (URLError.Code.cannotFindHost, APIError.unreachable),
+        (URLError.Code.dnsLookupFailed, APIError.unreachable),
         (URLError.Code.timedOut, APIError.timeout),
         (URLError.Code.cancelled, APIError.cancelled),
-        (URLError.Code.cannotFindHost, APIError.transport),
+        (URLError.Code.secureConnectionFailed, APIError.transport),
     ])
     func transportFailureMaps(code: URLError.Code, expected: APIError) async {
         let (client, _) = URLSessionNetworkClient.stubbed(.failure(code))

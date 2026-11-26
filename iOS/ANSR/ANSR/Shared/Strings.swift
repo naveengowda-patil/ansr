@@ -9,6 +9,7 @@ enum Strings {
     // MARK: Errors (§7.5)
     static let errorOffline = "You're offline. Check your connection and try again."
     static let errorTimeout = "The server took too long to respond. Please try again."
+    static let errorUnreachable = "Can't reach the server. Please try again later."
     static let errorUpstream = "We can't reach the catalogue right now. Please try again in a moment."
     static let errorValidation = "Please check your details and try again."
     static let errorNotFound = "This item is no longer available."

@@ -6,6 +6,7 @@ enum ErrorMessages {
         switch error {
         case .offline: Strings.errorOffline
         case .timeout: Strings.errorTimeout
+        case .unreachable: Strings.errorUnreachable
         case .upstream: Strings.errorUpstream
         case .validation: Strings.errorValidation
         case .notFound: Strings.errorNotFound
