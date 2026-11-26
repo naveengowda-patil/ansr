@@ -2,10 +2,11 @@
 
 | | |
 |---|---|
-| Status | v0.3, reviewed |
-| Last updated | 2026-11-25 |
+| Status | v0.17, backend implemented |
+| Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
+| Architecture guides | [BACKEND_ARCHITECTURE.md](BACKEND_ARCHITECTURE.md), [API_CONTRACT.md](API_CONTRACT.md), FRONTEND_ARCHITECTURE.md (added with the iOS work) |
 
 This is the single source of truth for **what** to build. Every change starts here: update the relevant section (and the changelog at the bottom), then write code to match. Section numbers are stable so commits, PRs and tests can cite them (e.g. "§6.4").
 
@@ -30,16 +31,16 @@ This is the single source of truth for **what** to build. Every change starts he
 | ID | Criterion | Exact rule |
 |---|---|---|
 | AC-1 | **Home** shows 5 featured "top rated" products the business picked | Ordered list `FEATURED_PRODUCT_IDS` from config. Ids that don't exist are skipped. If fewer than 5 remain, fill up with the highest-rated products not already included (ranking §5.5). Max 5 products. |
-| AC-2 | **Categories**: open a category, see its top rated products first, then the rest | Top rated = the 3 highest-rated products in that category (§5.5). Rest = the remaining products of the category in upstream order. No duplicates. A category with ≤3 products has an empty `rest`. |
+| AC-2 | **Categories**: open a category, see its top rated products first, then the rest | Category names match case-insensitively (§6.8). Top rated = the 3 highest-rated products in that category (§5.5). Rest = the remaining products of the category in upstream order. No duplicates. A category with ≤3 products has an empty `rest`. |
 | AC-3 | **Search**: type a term, tap search, only see matching products | Runs on explicit submit only. Case-insensitive substring match of the trimmed term on title, description **or** category. Filtering happens in the backend. |
 | AC-4 | **Product details**: tap a tile to see details | Detail screen fetches the product by id. |
 | AC-5 | **Enquiry**: tap "Enquire", fill a short form, submit; sales inbox gets an email, customer sees "Thank you" | Fields `productId`, `name`, `email` required, `message` optional. Plain-text email to `SALES_INBOX_EMAIL` with `Reply-To` = customer. On success the sheet shows a thank-you state. |
 
 ## 3. Constraints
 
-- **Under 10 minutes to run locally** for someone new: backend with `docker compose up`, app on the iOS Simulator against the local backend (§8).
+- **Under 10 minutes to run locally** for someone new: backend with one command, `docker compose up --build`, from a fresh clone, app on the iOS Simulator against the local backend (§8).
 - **No paid services or accounts.** Emails are caught locally by Mailpit.
-- **No secrets in the repo.** Config via `.env.example` → `.env` (git-ignored).
+- **No secrets in the repo.** Config comes from `.env.example`, which holds safe local defaults and is used directly. An optional `.env` (git-ignored) overrides it.
 - **AWS friendly** infra: containerised, stateless, config from env, logs to stdout, health endpoint (§8.3).
 - **The iOS app only talks to our backend.** It never calls `fakestoreapi.com`, not even for images.
 - **Tests cover the critical path** (§9) so the code can be changed with confidence.
@@ -93,7 +94,8 @@ No other runtime dependencies. Logging uses a small injected `Logger` interface 
 ```
 backend/
 ├── src/
-│   ├── server.ts            # startup only: load config, build container, listen, graceful shutdown
+│   ├── server.ts            # entry point: load config, build container, startServer, graceful shutdown
+│   ├── startup.ts           # startServer (listen, then non-blocking catalogue warm-up) and warmCatalogue
 │   ├── app.ts               # createApp(deps): Express app, no network port
 │   ├── config.ts            # the ONLY place that reads process.env; validates and fails fast
 │   ├── container.ts         # composition root: the ONLY place that instantiates adapters
@@ -102,9 +104,11 @@ backend/
 │   │   ├── ProductRepository.ts
 │   │   ├── ProductSearchEngine.ts
 │   │   ├── EmailService.ts
-│   │   └── Logger.ts
+│   │   ├── Logger.ts
+│   │   └── Clock.ts             # type Clock = () => number (ms); durations and cache ages
 │   ├── domain/              # pure business rules, no I/O
 │   │   ├── product.ts           # Product, Rating types
+│   │   ├── email.ts             # EmailMessage type (provider-agnostic)
 │   │   ├── ranking.ts           # compareByRating (tie-break)
 │   │   ├── featured.ts          # selectFeatured
 │   │   ├── categoryRanking.ts   # splitTopRated
@@ -114,18 +118,29 @@ backend/
 │   │   ├── health.ts  products.ts  categories.ts  enquiries.ts
 │   ├── http/
 │   │   ├── errorHandler.ts      # the single error middleware (§5.9)
-│   │   └── validate.ts          # zod parse helpers → ValidationError
+│   │   ├── params.ts            # shared zod schemas for path/query params
+│   │   └── validate.ts          # zod parse helpers → ValidationError (rejects repeated query params)
 │   ├── adapters/
 │   │   ├── fakestore/           # FakeStoreProductRepository + upstream zod schemas
 │   │   ├── search/              # InMemorySearchEngine
 │   │   ├── email/               # SmtpEmailService (nodemailer)
 │   │   └── logging/             # JsonLogger
 │   └── lib/
-│       └── TtlCache.ts          # TTL cache: single-flight refetch, stale fallback on error, injected clock
+│       └── TtlCache.ts          # TTL cache: stale-while-revalidate (expired copy served while one background refresh runs), retry back-off, 24 h stale cap, single-flight, injected clock
 ├── test/
-│   ├── fixtures/fakestore/      # recorded upstream responses (JSON, images)
-│   ├── mocks/                   # in-memory fakes for the ports
-│   └── *.test.ts
+│   ├── fixtures/fakestore/      # products.json, recorded from GET /products (image tests use inline bytes)
+│   ├── support/
+│   │   ├── fakes.ts             # in-memory port fakes, recording logger, buildProduct
+│   │   ├── testApp.ts           # createApp wired with the fakes
+│   │   └── fakeStore.ts         # fake Fake Store responses (fixture, fake fetch, fake clock) for the real repository
+│   ├── domain/                  # pure business rules
+│   ├── lib/                     # TtlCache
+│   ├── adapters/                # Fake Store repository, search engine, SMTP email, JSON logger
+│   ├── routes/                  # Supertest, per resource + search plug-and-play + errors
+│   ├── config.test.ts
+│   ├── container.test.ts
+│   ├── logging.test.ts          # debug events end to end through createContainer
+│   └── startup.test.ts
 ├── Dockerfile  package.json  tsconfig.json  .nvmrc
 ```
 
@@ -137,6 +152,12 @@ backend/
 - Environment variables are read only in `src/config.ts`. Everything else receives config as arguments.
 - `src/app.ts` exports `createApp(deps)` and is kept separate from `src/server.ts` so tests can run the app without a port.
 - All errors go through one error middleware (§5.9).
+- `createContainer(config, overrides?)` is the composition root. Its **test seams** (production uses the defaults) are:
+  - `createMailTransport`: default `nodemailer.createTransport`;
+  - `fetch`: default the global `fetch`;
+  - `writeLog`: default stdout;
+  - `now`: the `Clock` for cache ages and debug durations, default `performance.now()`. The container passes it everywhere it passes the clock: both caches, the repository, the email service and the products route (`AppDeps.now`).
+  - `Container.whenIdle()` resolves once the catalogue and image caches have no background refresh in flight (`TtlCache.whenIdle()`), so tests await it instead of sleeping.
 
 `createApp` dependencies:
 
@@ -146,6 +167,7 @@ interface AppDeps {
   searchEngine: ProductSearchEngine;
   emailService: EmailService;
   logger: Logger;
+  now: Clock;                   // durations (search.executed); injected so tests control time
   settings: {
     featuredProductIds: readonly number[];
     salesInboxEmail: string;
@@ -212,7 +234,12 @@ interface EmailMessage {
 interface EmailService { send(message: EmailMessage): Promise<void> }  // throws on failure
 
 // ports/Logger.ts
-interface Logger { info(msg: string, ctx?: Record<string, unknown>): void; warn(...): void; error(...): void }
+interface Logger {
+  debug(message: string, context?: LogContext): void;
+  info(message: string, context?: LogContext): void;
+  warn(message: string, context?: LogContext): void;
+  error(message: string, context?: LogContext): void;
+}
 ```
 
 Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `undefined`, never an exception.
@@ -223,32 +250,58 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
 - **Featured** — `selectFeatured(all, featuredIds, count = 5)`: walk `featuredIds` in order, keep existing products, drop duplicates; if fewer than `count`, append the highest-rated products not yet included; return at most `count`. The count of 5 is a fixed domain constant, not config.
 - **Category split** — `splitTopRated(productsInCategory, topCount = 3)`: `topRated` = first 3 by `compareByRating`; `rest` = remaining products in their original (upstream) order.
 - **Search match** — `matchesText(product, q)`: `q` already trimmed; case-insensitive substring of the whole phrase in `title`, `description` or `category` (not tokenised).
-- **Search filters** — `matchesFilters(product, query)`: every filter present must hold (AND). `q` via `matchesText`; `category` exact match; `minPrice ≤ price ≤ maxPrice` (inclusive, each bound optional); `rating.rate ≥ minRating`.
-- **Search sorts** — `compareForSort(sort)`: `relevance` = upstream order; `rating_desc` = `compareByRating`; `price_asc` / `price_desc` = by price, ties by `id` asc; `title_asc` = case-insensitive title (`localeCompare`, base sensitivity), ties by `id` asc.
-- **Capability check** — `findUnsupported(query, capabilities)`: returns each filter present in the query, and the sort, that the engine does not support, as `{ param, value }` pairs. Paging is always supported.
-- **Enquiry email** — `buildEnquiryEmail(product, enquiry, settings) → EmailMessage` (§5.8).
+- **Search filters** — `matchesFilters(product, query)`: every filter present must hold (AND).
+  - `q` via `matchesText` (enabled in the running app).
+  - *Additional, built and unit-tested, not enabled in the running app:* `category` (case-insensitive equality), `minPrice ≤ price ≤ maxPrice` (inclusive, each bound optional), `rating.rate ≥ minRating`.
+- **Search sorts** — `compareForSort(sort)`:
+  - `relevance` = upstream order (enabled in the running app).
+  - *Additional, built and unit-tested, not enabled in the running app:* `rating_desc` = `compareByRating`; `price_asc` / `price_desc` = by price, ties by `id` asc; `title_asc` = case-insensitive title (`localeCompare`, base sensitivity), ties by `id` asc.
+- **Category match** — `sameCategory(a, b)`: case-insensitive equality, used by the category filter and by `GET /categories/{category}` (§6.8).
+- **Capabilities** — two named sets, so an engine's capabilities are always explicit:
+  - `textSearchOnly()`: filter `q`, sort `relevance`. This is what the running app uses.
+  - `allCapabilities()`: every filter and sort.
+  - Paging is always supported and isn't listed.
+- **Capability check** — `findUnsupported(query, capabilities)`: returns each filter present in the query, and the sort, that the engine doesn't support, as `{ param, value }` pairs.
+- **Enquiry email** — `buildEnquiryEmail(product, enquiry, settings, receivedAt) → EmailMessage` (§5.8). The route passes `receivedAt` (`new Date()`), so the function stays pure and tests get an exact timestamp.
 
 ### 5.6 Fake Store adapter (`FakeStoreProductRepository`)
 
-- Receives through its constructor: `fetch` function, `baseUrl`, `timeoutMs`, `cacheTtlMs`, image cache limits, a clock, and a `Logger`.
+- Receives through its constructor:
+  - `fetch`, `baseUrl` and `timeoutMs`
+  - `imageHostAllowlist`, `imageTimeoutMs` and `imageMaxBytes`
+  - two `TtlCache` instances, `catalogueCache` and `imageCache`, created in `container.ts`, which owns the TTL, stale cap, retry back-off, size bound, clock, and the cache's `name` and `Logger` (for the `cache.*` debug events, §5.11)
+  - a `Logger`, and a `Clock` (`now`) for the `upstream.request` / `image.fetched` durations
 - **One upstream call for data:** `GET {baseUrl}/products` loads the whole catalogue (≈20 items). `getById`, `getByIds` and `listCategories` are derived from that cached snapshot (categories = distinct values in first-seen order).
 - **Timeout:** every catalogue request uses `AbortSignal.timeout(PRODUCT_API_TIMEOUT_MS)` (images have their own, below).
-- **Cache with stale fallback** (D-011): the catalogue snapshot is held in a `TtlCache`.
-  - Within `PRODUCT_CACHE_TTL_SECONDS`: served from the cache, with no upstream call.
-  - After the TTL: refetch. On success, the copy and its timestamp are replaced.
-  - If the refetch fails and a last good copy exists that is at most `PRODUCT_STALE_MAX_AGE_SECONDS` old (default 86400 = 24 h): serve the stale copy and log a warning (`catalogue.stale_served`, with the copy's age and the failure reason).
-  - If the refetch fails and there is no copy, or the copy is older than that cap: `UpstreamError` (502).
-  - Concurrent refetches share one in-flight request (single-flight). Failures are never cached.
+- **Cache: stale-while-revalidate** (D-011). The catalogue snapshot, and each image, is held in a `TtlCache`. A request never waits for Fake Store when a usable copy exists.
+
+  | Copy's age | What the request gets | Upstream |
+  |---|---|---|
+  | No copy yet (first load, or evicted) | Waits for the fetch | Foreground fetch. Failure → `UpstreamError` (502). Failures are not cached and there's no back-off. |
+  | < `PRODUCT_CACHE_TTL_SECONDS` (300) | The cached copy (fresh) | None |
+  | TTL ≤ age ≤ `PRODUCT_STALE_MAX_AGE_SECONDS` (24 h) | The cached copy **immediately**, marked stale | A background refresh starts, unless one is already running for that key or the back-off window is open |
+  | > 24 h | Waits for a refresh | Foreground refresh, ignoring the back-off. Failure → `UpstreamError` (502) |
+
+  - **Background refresh:**
+    - Only one runs per key at a time. Concurrent requests don't start another; they reuse it, and they're served the stale copy meanwhile.
+    - On success, the new copy and its timestamp replace the old ones.
+    - On failure, one warning is logged (`catalogue.refresh_failed` / `image.refresh_failed`, with the copy's age and the reason), and the old copy keeps being served.
+    - Its errors are always caught, so it never causes an unhandled rejection.
+  - **Retry back-off:** after a failed background refresh, no new refresh starts for `CACHE_RETRY_BACKOFF_SECONDS` (default 30). The first request after the window starts one.
+  - **Single-flight:** foreground and background loads share one in-flight request per key.
+  - **Testing:** `TtlCache.whenIdle()` resolves once all background refreshes have settled, so tests never depend on timing.
   - The caches are `TtlCache` instances created in `container.ts` and injected into the adapter.
+- **Startup warm-up:** once the server is listening, `startServer` (`src/startup.ts`) starts one catalogue load. It doesn't block startup. If Fake Store is down, it logs a warning (`catalogue.warmup_failed`) and the server keeps running; the first request then does the foreground fetch.
 - **Validation:** upstream JSON is parsed with a zod schema. Timeout, network error, non-2xx or schema mismatch → `UpstreamError` (details logged, never returned to the client).
+  - All or nothing (D-028): one malformed product rejects the whole response. The result is then the stale copy or a 502, never a partly valid catalogue.
 - **Mapping:** Fake Store `{ id, title, price, description, category, image, rating }` → `Product` with `currency: "USD"`. The upstream `image` URL is kept internal to the adapter and never exposed by the API.
 - **Images** (D-001): `getImage(id)` looks up the product's internal image URL, then applies these guards. Each failure → `UpstreamError`, with details logged.
   1. **Host allowlist:** the scheme is `http`/`https` and the host is exactly one of `IMAGE_HOST_ALLOWLIST`. Otherwise no request is made.
   2. **No redirects:** fetched with `redirect: 'error'`, so a redirect can't lead outside the allowlist.
   3. **Timeout:** `AbortSignal.timeout(IMAGE_TIMEOUT_MS)`.
-  4. **Content type:** only `image/*` responses are passed through.
+  4. **Content type:** only `image/jpeg`, `image/png`, `image/webp` and `image/gif` pass through. Parameters are ignored and case doesn't matter. Anything else is rejected, including `image/svg+xml` (SVG can carry scripts). The response uses the normalised type, e.g. `image/png`.
   5. **Max size:** rejected if `Content-Length` exceeds `IMAGE_MAX_BYTES`. Reading the body also stops once it passes the limit, which covers a missing or wrong `Content-Length`.
-  - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`) with the same TTL and stale fallback as the catalogue.
+  - Image bytes are kept in a bounded in-memory cache (`IMAGE_CACHE_MAX_ENTRIES`, least recently used evicted) with the same stale-while-revalidate behaviour, back-off and cap as the catalogue. A failed background refresh is logged as `image.refresh_failed`.
   - The route sets cache headers on the response (§6.6).
 
 ### 5.7 Search design
@@ -270,8 +323,12 @@ Two responsibilities, two ports:
 6. Respond `{ items, total, page, pageSize }`.
 
 **`InMemorySearchEngine`:**
-- Constructor: `new InMemorySearchEngine({ name = 'in-memory', capabilities = ALL_CAPABILITIES })`. The container uses the defaults, so every filter and sort is supported. Tests can pass fewer capabilities to exercise the 400 path with the real engine.
-- Applies `matchesFilters` and `compareForSort` (§5.5), then pages. An unknown category used as a filter gives an empty result, not a 404.
+- Constructor: `new InMemorySearchEngine({ name = 'in-memory', capabilities = textSearchOnly() })`.
+  - With no options, it does **text search only**. Nothing extra is enabled by default.
+  - `container.ts` still passes `{ capabilities: textSearchOnly() }` explicitly, so what the running app supports is visible at the composition root.
+- **The running app does text search only** (D-008): `q`, `relevance` and paging. Any other filter or sort gets a 400 `VALIDATION_ERROR` plus a `search.unsupported` warning.
+- *Additional, built and unit-tested, not enabled in the running app:* the `category`, `minPrice`, `maxPrice` and `minRating` filters and the `rating_desc`, `price_asc`, `price_desc` and `title_asc` sorts. They switch on by creating the engine with `allCapabilities()`, or by plugging in a real engine that declares them. No route or contract change is needed.
+- The engine applies `matchesFilters` and `compareForSort` (§5.5), then pages. If enabled, an unknown category used as a filter gives an empty result, not a 404.
 
 Category "top rated" stays a domain function (`splitTopRated`), not engine sorting.
 
@@ -285,7 +342,19 @@ Swapping engines (e.g. OpenSearch) = a new adapter implementing `ProductSearchEn
 - `Subject`: `Product enquiry: {product title}` — CR/LF stripped from the title (upstream data, defence in depth).
 - Plain text body: product id and title, customer name, customer email, message (or "(no message)"), received timestamp (ISO 8601, UTC). Never HTML.
 - Sending is synchronous; failure → 502 `UPSTREAM_ERROR`. No queueing or retries.
+- **SMTP timeout:** the transport is created with `connectionTimeout`, `greetingTimeout` and `socketTimeout` all set to `SMTP_TIMEOUT_MS` (default 10000).
+  - Without these, nodemailer's defaults apply: 2 min to connect, 30 s for the greeting and 10 min of socket inactivity. A hanging mail server could stall an enquiry for minutes.
+  - A send that hits the timeout fails like any other delivery failure: `UpstreamError` → 502.
+- **Amazon SES** works through its SMTP interface by config alone, with no code change:
+  - `SMTP_HOST=email-smtp.<region>.amazonaws.com`
+  - `SMTP_USER` / `SMTP_PASS` = the SES SMTP credentials
+  - either **port 587 with `SMTP_SECURE=false`**: the connection starts plain and is upgraded with STARTTLS, which nodemailer does automatically when the server offers it, and SES requires it before AUTH;
+  - or **port 465 with `SMTP_SECURE=true`**: TLS from the first byte.
 - Logs record the product id and outcome only, not the customer's name, email or message.
+- `SmtpEmailService` receives `(transport, logger, now)`. It logs `email.sending` / `email.sent` at debug with `durationMs` only: no addresses, names, subject or body (§5.11).
+- `SmtpEmailService` depends on a narrow `MailTransport` interface (`sendMail` only), not on nodemailer types.
+  - The nodemailer transport is created in `container.ts` from `smtpTransportOptions(config)`, through an injectable factory (default `nodemailer.createTransport`), so tests can check the options it receives.
+  - Tests use nodemailer's stream transport (no SMTP server) or a stub transport.
 
 ### 5.9 Errors
 
@@ -306,29 +375,71 @@ The single error middleware maps `AppError` subclasses to the table, maps anythi
 
 ### 5.10 Configuration
 
-Read and validated only in `src/config.ts`; the app fails fast at startup on invalid config. All variables live in the root `.env.example` with safe defaults.
+Read and validated only in `src/config.ts`. The app fails fast at startup on invalid config and lists every problem. All variables are in the root `.env.example` with safe local values. Docker Compose uses that file directly as the defaults, so it must stay free of secrets and always runnable as-is.
 
-| Variable | Example / default | Notes |
-|---|---|---|
-| `PORT` | `3000` | |
-| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
-| `PRODUCT_API_BASE_URL` | `https://fakestoreapi.com` | |
-| `PRODUCT_API_TIMEOUT_MS` | `5000` | Per catalogue request |
-| `PRODUCT_CACHE_TTL_SECONDS` | `300` | Catalogue snapshot + image cache TTL; stale copy served if refetch fails |
-| `PRODUCT_STALE_MAX_AGE_SECONDS` | `86400` | Oldest copy (catalogue or image) that may be served when a refetch fails |
-| `IMAGE_HOST_ALLOWLIST` | `fakestoreapi.com` | Comma-separated hostnames, exact match |
-| `IMAGE_TIMEOUT_MS` | `5000` | Per image request |
-| `IMAGE_CACHE_MAX_ENTRIES` | `100` | Bounded image cache |
-| `IMAGE_MAX_BYTES` | `5242880` | 5 MB |
-| `IMAGE_CLIENT_MAX_AGE_SECONDS` | `86400` | `Cache-Control` on image responses |
-| `FEATURED_PRODUCT_IDS` | `1,5,9,13,17` | Ordered, comma-separated positive integers |
-| `SMTP_HOST` | `mailpit` | `localhost` when running the API outside Docker |
-| `SMTP_PORT` | `1025` | |
-| `SMTP_SECURE` | `false` | |
-| `SMTP_USER` / `SMTP_PASS` | empty | Optional; empty = no auth (Mailpit) |
-| `MAIL_FROM` | `catalogue@example.com` | |
-| `SALES_INBOX_EMAIL` | `sales@example.com` | |
-| `JSON_BODY_LIMIT` | `10kb` | |
+Every variable is one of three kinds:
+- **Required:** environment-specific (URLs, hosts, addresses, ids). There is no default in code, so the app won't start without it.
+- **Default:** a tuning value. `config.ts` holds the default, and `.env.example` repeats it.
+- **Optional:** may be left empty.
+
+| Variable | Kind | Default / `.env.example` value | Notes |
+|---|---|---|---|
+| `PORT` | Default | `3000` | |
+| `LOG_LEVEL` | Default | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `PRODUCT_API_BASE_URL` | **Required** | `https://fakestoreapi.com` | `http`/`https` URL |
+| `PRODUCT_API_TIMEOUT_MS` | Default | `5000` | Per catalogue request |
+| `PRODUCT_CACHE_TTL_SECONDS` | Default | `300` | Catalogue + image copies are fresh this long; after it, they are served stale while a background refresh runs |
+| `PRODUCT_STALE_MAX_AGE_SECONDS` | Default | `86400` | Oldest copy (catalogue or image) that may be served when a refetch fails |
+| `CACHE_RETRY_BACKOFF_SECONDS` | Default | `30` | After a failed background refresh, don't start another for this long (catalogue and images) |
+| `IMAGE_HOST_ALLOWLIST` | **Required** | `fakestoreapi.com` | Comma-separated hostnames, exact match; at least one |
+| `IMAGE_TIMEOUT_MS` | Default | `5000` | Per image request |
+| `IMAGE_CACHE_MAX_ENTRIES` | Default | `100` | Bounded image cache |
+| `IMAGE_MAX_BYTES` | Default | `5242880` | 5 MB |
+| `IMAGE_CLIENT_MAX_AGE_SECONDS` | Default | `86400` | `Cache-Control` on image responses |
+| `FEATURED_PRODUCT_IDS` | **Required** | `1,5,9,13,17` | Ordered, comma-separated positive integers. Must be set; may be empty (Home is then filled by rating). |
+| `SMTP_HOST` | **Required** | `mailpit` | `localhost` when running the API outside Docker |
+| `SMTP_PORT` | **Required** | `1025` | |
+| `SMTP_SECURE` | Default | `false` | `true` \| `false`. `false` for Mailpit and for SES on port 587 (STARTTLS); `true` for SES on port 465 (§5.8) |
+| `SMTP_TIMEOUT_MS` | Default | `10000` | Connection, greeting and socket timeout for the SMTP transport; a hung send → 502 |
+| `SMTP_USER` / `SMTP_PASS` | Optional | empty | Empty = no auth (Mailpit) |
+| `MAIL_FROM` | **Required** | `catalogue@example.com` | Valid email address |
+| `SALES_INBOX_EMAIL` | **Required** | `sales@example.com` | Valid email address |
+| `JSON_BODY_LIMIT` | Default | `10kb` | |
+
+### 5.11 Log events
+
+One JSON line per event on stdout (`JsonLogger`): `{ time, level, msg, ...context }`. `msg` is a stable event name. `LOG_LEVEL` (default `info`) drops anything below it.
+
+**Rules:**
+- **Debug events are for troubleshooting only.** Nothing changes at the default `LOG_LEVEL=info`.
+- **No customer data and no secrets in any line, at any level.** That means no customer names, email addresses or messages; no `SMTP_USER` or `SMTP_PASS`; no configured email addresses.
+- **Durations come from the injected `Clock`** (`now`, created in `container.ts`), never from scattered `Date.now()` calls, so tests can control them. Durations and ages are whole milliseconds.
+- **The logger and clock are injected through constructors and options.** Only `container.ts` creates concrete ones.
+
+| Event | Level | Where | Context |
+|---|---|---|---|
+| `config.loaded` | debug | `container.ts`, once at startup | allowlisted safe values only (`safeConfigSummary`): `port`, `logLevel`, cache TTL / stale cap / retry back-off, upstream / image / SMTP timeouts, image cache size and limits, `featuredProductIds`, `imageHostAllowlist`, `smtp: { host, port, secure }`. Never `SMTP_USER`, `SMTP_PASS` or email addresses. |
+| `cache.hit` | debug | `TtlCache` | `cache` (`catalogue` \| `image`), `key`, `ageMs` |
+| `cache.stale` | debug | `TtlCache` | `cache`, `key`, `ageMs`. The copy is served while a background refresh may start. |
+| `cache.miss` | debug | `TtlCache` | `cache`, `key`, `ageMs` (`null` when there is no copy; the age when past the cap). The request waits. |
+| `upstream.request` | debug | Fake Store adapter, catalogue fetch | `path`, `status` (HTTP status, `"timeout"` or `"network_error"`), `durationMs` |
+| `image.fetched` | debug | Fake Store adapter | `productId`, `bytes`, `contentType`, `durationMs` |
+| `search.executed` | debug | products route | `q`, `filters` (only those present), `sort`, `page`, `pageSize`, `total`, `durationMs` |
+| `email.sending` | debug | `SmtpEmailService` | none |
+| `email.sent` | debug | `SmtpEmailService` | `durationMs` only |
+| `server.started` | info | `startup.ts` | `port` |
+| `catalogue.warmed` | info | `startup.ts` | `products` (count) |
+| `enquiry.sent` | info | enquiries route | `productId` |
+| `request.rejected` | info | error middleware (4xx) | `method`, `path`, `status`, `code`, `message` |
+| `server.stopping` | info | `server.ts` | `signal` |
+| `search.unsupported` | warn | products route | `param`, `value`, `engine` |
+| `catalogue.refresh_failed` | warn | Fake Store adapter | `ageSeconds`, `reason` |
+| `image.refresh_failed` | warn | Fake Store adapter | `productId`, `ageSeconds`, `reason` |
+| `catalogue.warmup_failed` | warn | `startup.ts` | `reason` |
+| `request.failed` | error | error middleware (5xx) | `method`, `path`, `status`, `code`, `error` (serialised, with cause) |
+| `server.close_failed` | error | `server.ts` | `error` |
+| `server.shutdown_timeout` | error | `server.ts` | `graceMs` |
+| `server.start_failed` | error | `server.ts`, written to stderr before a logger exists | `message` |
 
 ---
 
@@ -363,18 +474,23 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 
 ### 6.4 `GET /products` (AC-3, search and listing)
 
-| Param | Shape | Meaning (§5.5) |
-|---|---|---|
-| `q` | string, trimmed, 1–100 chars; present-but-blank → 400 | case-insensitive match on title, description or category |
-| `category` | string, 1–100 chars | exact category |
-| `minPrice`, `maxPrice` | number ≥ 0; `minPrice ≤ maxPrice` | inclusive price bounds |
-| `minRating` | number 0–5 | `rating.rate ≥ minRating` |
-| `sort` | `relevance` \| `rating_desc` \| `price_asc` \| `price_desc` \| `title_asc` (default `relevance`) | result order |
-| `page` | integer ≥ 1 (default 1) | |
-| `pageSize` | integer 1–50 (default 20) | |
+| Param | Shape | Meaning (§5.5) | Running app |
+|---|---|---|---|
+| `q` | string, trimmed, 1–100 chars; present-but-blank → 400 | case-insensitive match on title, description or category | ✅ enabled |
+| `category` | string, 1–100 chars | category, case-insensitive | additional: 400 |
+| `minPrice`, `maxPrice` | number ≥ 0; `minPrice ≤ maxPrice` | inclusive price bounds | additional: 400 |
+| `minRating` | number 0–5 | `rating.rate ≥ minRating` | additional: 400 |
+| `sort` | `relevance` \| `rating_desc` \| `price_asc` \| `price_desc` \| `title_asc` (default `relevance`) | result order | `relevance` ✅; others additional: 400 |
+| `page` | integer ≥ 1 (default 1) | | ✅ always |
+| `pageSize` | integer 1–50 (default 20) | | ✅ always |
 
+"Additional" means built and unit-tested, but not enabled in the running app (§5.7, D-008). The full contract and its shape validation stay in place, so enabling a capability needs no API change.
+
+- **Absent vs empty:**
+  - An absent param is not applied (filters) or gets its default (`sort`, `page`, `pageSize`).
+  - A param that is **present but empty** returns 400 `VALIDATION_ERROR`. That includes whitespace-only for `q` and `category`, e.g. `?category=`, `?minPrice=`, `?sort=` or `?page=`. An empty value is never treated as "not set".
 - Unknown params or repeated params → 400 `VALIDATION_ERROR`.
-- Shape is validated first, then engine support (§5.7). The default `InMemorySearchEngine` supports every filter and sort. An engine configured with fewer capabilities rejects the others with 400 and logs a warning.
+- Shape is validated first, then engine support (§5.7). The running app's engine supports `q`, `relevance` and paging. Every other filter or sort → 400 `VALIDATION_ERROR` naming it (e.g. `Filter 'category' is not supported yet.`) plus a `search.unsupported` warning.
 - No params → all products, paged.
 
 `200 { "items": Product[], "total": number, "page": number, "pageSize": number }`
@@ -386,14 +502,14 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 ### 6.6 `GET /products/{id}/image`
 
 `200` with the image bytes and these headers:
-- `Content-Type`: the upstream `image/*` type
+- `Content-Type`: one of `image/jpeg`, `image/png`, `image/webp`, `image/gif`
 - `Cache-Control: public, max-age={IMAGE_CLIENT_MAX_AGE_SECONDS}`
 - `X-Content-Type-Options: nosniff`
 
 Errors:
 - Invalid id → 400.
 - Unknown product → 404.
-- Any image guard failing (host not allowlisted, redirect, timeout, not `image/*`, too large) or another upstream failure, with no cached copy → 502.
+- Any image guard failing (host not allowlisted, redirect, timeout, disallowed type such as SVG, too large) or another upstream failure, with no cached copy → 502.
 
 ### 6.7 `GET /categories`
 
@@ -401,8 +517,8 @@ Errors:
 
 ### 6.8 `GET /categories/{category}` (AC-2)
 
-`category` is URL-encoded by the client (e.g. `men's%20clothing`).
-`200 { "category": string, "topRated": Product[], "rest": Product[] }` — rule §5.5. Unknown category → 404.
+`category` is URL-encoded by the client (e.g. `men's%20clothing`). It matches **case-insensitively**: `/categories/JEWELERY` works.
+`200 { "category": string, "topRated": Product[], "rest": Product[] }` — rule §5.5. `category` in the response is the name **as the data spells it** (`jewelery`), not as requested. Unknown category → 404.
 
 ### 6.9 `POST /enquiries` (AC-5)
 
@@ -410,7 +526,7 @@ Request body (`Content-Type: application/json`, unknown fields rejected):
 
 | Field | Rule |
 |---|---|
-| `productId` | required, positive integer, must exist (else 404 `NOT_FOUND`) |
+| `productId` | required, positive integer **JSON number**, must exist (else 404 `NOT_FOUND`). `"7"` (a string), `7.5`, `0` and `-1` → 400 |
 | `name` | required, trimmed, 1–100 chars, no CR/LF or other control characters |
 | `email` | required, trimmed, valid email address, ≤ 254 chars, no CR/LF |
 | `message` | optional, ≤ 2000 chars (line breaks allowed; it only goes into the body) |
@@ -519,9 +635,11 @@ protocol NetworkClient: Sendable {
 | `productImage(id:)` | `GET /products/{id}/image` |
 | `categories` | `GET /categories` |
 | `category(_:)` | `GET /categories/{category}` (path-encoded) |
-| `createEnquiry(EnquiryRequest)` | `POST /enquiries` |
+| `createEnquiry(EnquiryRequest)` | `POST /enquiries`. `EnquiryRequest.productId` is a Swift `Int`, so it is encoded as a positive integer JSON number (`7`, never `"7"` or `7.5`). The backend returns 400 for anything else (§6.9). |
 
 `ProductQuery` mirrors §6.4 with every field optional (`q`, `category`, `minPrice`, `maxPrice`, `minRating`, `sort`, `page`, `pageSize`). The search screen currently sends `q` only; no sort/filter UI yet.
+
+**Endpoints never sends empty values.** A `nil` field is omitted, and so is a string that is empty after trimming. The backend rejects present-but-empty params with 400 (§6.4), so the app must never produce `?q=` or `?category=`.
 
 `APIError` (typed, `Equatable`):
 
@@ -555,9 +673,13 @@ ViewModels turn `APIError` into user-facing text through one pure function in `S
 
 | Screen | Data | States | Intents |
 |---|---|---|---|
-| **Home** (root) | `featured` + `categories` loaded concurrently → `ViewState<HomeContent>` | loading / loaded / empty (no featured and no categories) / error+retry | tap tile → `showProduct`; tap category → `showCategory`; `.searchable` + `.onSubmit(of: .search)` → `showSearchResults` if the trimmed term is non-empty |
+| **Home** (root) | `featured` + `categories` loaded concurrently → `ViewState<HomeContent>` | loading / loaded / empty (no featured and no categories) / error+retry | tap tile → `showProduct`; tap category → `showCategory`; `.searchable` + `.onSubmit(of: .search)` → `showSearchResults`. Search stays disabled while the trimmed text is empty (see below). |
 | **Category** | `category(_:)` → `ViewState<CategoryProducts>` | sections "Top rated" and "More in {category}" (second hidden when empty); empty; error+retry | tap tile → `showProduct` |
-| **Search results** | `products(ProductQuery(q:))` → `ViewState<ProductPage>` | loaded list; empty = "No products match '{q}'"; error+retry | `.searchable` prefilled with the query; resubmitting reloads in place; blank submit does nothing; tap tile → `showProduct` |
+| **Search results** | `products(ProductQuery(q:))` → `ViewState<ProductPage>` | loaded list; empty = "No products match '{q}'"; error+retry | `.searchable` prefilled with the query; resubmitting reloads in place; search disabled while the trimmed text is empty; tap tile → `showProduct` |
+
+**Search stays disabled while the trimmed text is empty.**
+- The keyboard's Search key is disabled while the field is empty, which is the system default for `.searchable`.
+- The ViewModel's `canSearch` is `false` for whitespace-only text, so submitting does nothing and no request is sent.
 | **Product detail** | `product(id:)` → `ViewState<Product>` | loaded; **empty = 404 "This product is no longer available"**; error+retry | "Enquire" → `showEnquiry` |
 | **Enquiry** (sheet) | `createEnquiry` | form state: `editing` → `submitting` → `submitted` (thank-you) or `failed(message)` | client-side validation mirrors §6.9 (submit disabled until valid); submit; on thank-you "Done" → `dismissSheet` |
 
@@ -574,24 +696,30 @@ Price display: formatted in the ViewModel with the product's `currency`.
 
 ### 8.1 Prerequisites
 
-- Docker with Compose v2 (Docker Desktop, OrbStack or Colima).
+- Docker with **Compose 2.24 or newer** (Docker Desktop, OrbStack or Colima), needed for the optional `env_file` used below.
 - **Xcode 16 or newer** (built with Xcode 26) and an iOS 18+ simulator.
 - Optional, for running backend tests outside Docker: Node.js 24 (`.nvmrc`).
 
 ### 8.2 Run (target: under 10 minutes)
 
+One command from a fresh clone, with nothing to copy:
+
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
 
+- **Configuration:**
+  - `.env.example` is loaded as the defaults.
+  - A `.env`, if present, is loaded after it, so any variable it sets wins (`env_file` with `required: false`, D-029).
+  - `.env` is optional and only for overrides, for example `PORT=3100` or `LOG_LEVEL=debug`.
+  - Compose also reads `.env` for `${PORT}` in the port mapping, so a `PORT` override changes the published port too.
 - API: http://localhost:3000 (`/health` to check)
 - Mailpit inbox UI: http://localhost:8025 (SMTP on 1025)
 
 Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug config already points at `http://localhost:3000`.
 
 `docker-compose.yml` services:
-- `api` — built from `backend/Dockerfile`, env from `.env`, port 3000, depends on `mailpit`, healthcheck on `/health`.
+- `api` — built from `backend/Dockerfile`, env from `.env.example` then the optional `.env`, port `${PORT:-3000}`, depends on `mailpit`, healthcheck on `/health`.
 - `mailpit` — `axllent/mailpit` (pinned tag), ports 8025 and 1025.
 
 ### 8.3 AWS readiness
@@ -602,18 +730,19 @@ Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug co
 - Config only from environment (ECS task definition / Secrets Manager for SMTP credentials later).
 - JSON logs to stdout → CloudWatch Logs.
 - Graceful shutdown on `SIGTERM` (stop accepting connections, finish in-flight requests).
-- Email in production: Amazon SES via its SMTP interface works with the existing `SmtpEmailService` by config alone; an SES-API adapter would be a new `EmailService`.
+- Catalogue warm-up after listening (§5.6), so the first user request after a deploy is normally served from the cache.
+- Email in production: Amazon SES via its SMTP interface works with the existing `SmtpEmailService` by config alone: port 587 with `SMTP_SECURE=false` (STARTTLS), or port 465 with `SMTP_SECURE=true` (§5.8). An SES-API adapter would be a new `EmailService`.
 
 ### 8.4 README contents
 
 The root `README.md` (written in the backend PR, completed in the iOS PR) covers:
 - What the project is, with links to this blueprint, `DECISIONS.md` and `AI_USAGE.md`.
 - **Prerequisites:**
-  - Docker with Compose v2.
+  - Docker with Compose 2.24 or newer.
   - **Xcode 16 or newer**, which is required for the iOS 18 deployment target and the synchronized-folder project format.
   - An iOS 18+ simulator.
   - Optionally Node.js 24, for backend tests outside Docker.
-- **Quick start:** the steps in §8.2, and where to see the enquiry email (Mailpit at http://localhost:8025).
+- **Quick start:** the one command in §8.2 (`.env` optional, for overrides only), and where to see the enquiry email (Mailpit at http://localhost:8025).
 - **Running tests:**
   - backend: `cd backend && npm ci && npm test` (Node 24), or with Docker only: `docker build --target test backend`
   - iOS: ⌘U in Xcode, or `xcodebuild test` with a simulator destination
@@ -626,18 +755,26 @@ The root `README.md` (written in the backend PR, completed in the iOS PR) covers
 
 Tests never hit the real network. They test behaviour through public interfaces, and each must be shown to fail when the behaviour breaks.
 
+Tests never sleep. Time moves through an injected fake clock, and background work is awaited with `whenIdle()`.
+
 ### 9.1 Backend (Vitest)
 
 | Area | How | Must cover |
 |---|---|---|
 | Domain | Unit tests on pure functions | ranking tie-break; `selectFeatured` (order kept, missing skipped, duplicates dropped, fill to 5, never >5, catalogue <5); `splitTopRated` (top 3, rest in upstream order, no duplicates, ≤3 products); `matchesText` (case-insensitive, title, description or category, phrase); `matchesFilters` (each filter, inclusive bounds, AND); `compareForSort` (each sort, tie-breaks); `findUnsupported`; `buildEnquiryEmail` (plain text, reply-to, subject CR/LF stripped) |
-| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
-| Search plug-and-play | Supertest + mock `Logger` | The **real `InMemorySearchEngine` created with limited capabilities**: an unsupported filter and an unsupported sort each → 400 naming them, and a warning is logged with `param`, `value` and the engine name. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. |
-| `InMemorySearchEngine` | Unit | each filter and sort; combined filters; paging and total; relevance = upstream order; default capabilities = everything; re-index skipped for the same snapshot |
-| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Cache:** fresh (no upstream call); expired + refetch OK (new copy); expired + refetch fails (stale copy served, warning logged); stale copy older than the 24 h cap + failure (`UpstreamError`); no copy + failure (`UpstreamError` → 502).<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; non-`image/*` rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
-| `SmtpEmailService` | nodemailer stream/JSON transport (no SMTP server) | headers (to, from, reply-to), plain text only |
-| `TtlCache` | Unit with fake clock | fresh hit; refetch after TTL; stale served within the cap, not beyond it; failures not cached; single-flight; bounded entries (oldest evicted) |
-| `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing |
+| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
+| Search plug-and-play | Supertest + mock `Logger` | The **default `InMemorySearchEngine` (text search only)**: `category`, `minPrice`, `maxPrice`, `minRating` and each non-relevance sort → 400 naming it, with a warning logged (`param`, `value`, engine name); `q`, `sort=relevance` and paging work. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. With `allCapabilities()`, the real engine serves `category` + sort through the route. |
+| `InMemorySearchEngine` | Unit | default = `textSearchOnly()`; with `allCapabilities()`: each filter and sort (additional, not enabled in the running app), category filter case-insensitive, combined filters; paging and total; relevance = upstream order; searches the latest snapshot after re-indexing |
+| Categories route | Supertest | `/categories/JEWELERY` matches and returns `jewelery` as the data spells it; unknown → 404 |
+| Debug log events (§5.11) | Recording logger per component; end-to-end through `createContainer` with injected `fetch`, mail transport, log writer and a **fake clock** (`now`). Time is moved past the TTL and background refreshes are awaited with `container.whenIdle()`; no sleeps. | each event is logged with the expected context; with `LOG_LEVEL=info` none of them is written; `config.loaded` never contains `SMTP_USER`, `SMTP_PASS` or an email address; `email.sending` / `email.sent` never contain the customer's name, email or message |
+| `container.ts` | Unit (no network) | the running app's search engine is `textSearchOnly()`; settings flow from config; the SMTP transport receives `connectionTimeout`, `greetingTimeout` and `socketTimeout` = `SMTP_TIMEOUT_MS` |
+| Enquiry route (email) | Supertest | send fails (502): logs contain no customer name, email or message; tab, `\u0000` and `\u007F` in `name` and in `email` → 400; `productId` `7.5`, `0`, `-1` (and `"7"`) → 400 |
+| `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Stale-while-revalidate, catalogue and image:**<br>• an expired copy is returned without waiting for upstream (the upstream response is held back until after the assertion);<br>• exactly one background refresh for concurrent requests;<br>• a successful refresh replaces the copy;<br>• a failed refresh keeps serving the old copy and logs once;<br>• back-off is respected (no refresh inside the window, one after it);<br>• past the 24 h cap the request waits and gets `UpstreamError`;<br>• no copy + failure → `UpstreamError`.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
+| `SmtpEmailService` | nodemailer stream transport, a stub transport, and a local socket that never greets | headers (to, from, reply-to), plain text only; a transport rejecting with a timeout error → `UpstreamError`; a real nodemailer transport against a silent local server times out within `SMTP_TIMEOUT_MS` → `UpstreamError` |
+| `TtlCache` | Unit with fake clock + `whenIdle()` | fresh hit; expired copy returned immediately and marked stale while one background refresh runs; refresh success replaces the copy; refresh failure keeps the copy, calls the error callback once and starts the back-off; no refresh inside the window, one after it; past the cap the call waits and rethrows; first load waits; a throwing error callback never causes an unhandled rejection; single-flight; bounded entries (oldest evicted) |
+| `startup.ts` | Real server on port 0 + fake repository | `/health` answers while the warm-up is still pending; a failed warm-up logs `catalogue.warmup_failed` and the server keeps serving; a successful warm-up fills the cache |
+| Routes (cache past cap) | Supertest + real `FakeStoreProductRepository` | catalogue older than 24 h and Fake Store down → `GET /products/featured` is 502 |
+| `config.ts` | Unit | defaults, invalid values fail fast, `FEATURED_PRODUCT_IDS` parsing; several invalid variables at once → **one** `ConfigError` naming every one of them |
 
 ### 9.2 iOS (Swift Testing)
 
@@ -702,6 +839,7 @@ None open.
 ## 12. Future (not in scope)
 
 - **Tuist for the iOS project:** generate the project from a Swift manifest, so there are no `.xcodeproj` merge conflicts, and split it into modules (`Core`, `Networking`, `DesignSystem`, `Features`).
+- **Cursor-based paging for search:** today paging is offset-based (`page`, `pageSize`), so items can shift between pages if the catalogue refreshes mid-browse. A cursor (for example, the last item's sort key and id) keeps pages stable.
 - See `DECISIONS.md` → "What I'd do next" and "How it grows".
 
 ---
@@ -713,3 +851,17 @@ None open.
 | 0.1 | 2026-11-25 | Initial blueprint: requirements, architecture, API contract, iOS design, config, tests, delivery flow. Project-specific rules moved here from `CLAUDE.md`. |
 | 0.2 | 2026-11-25 | Review changes: search also matches category; `InMemorySearchEngine` supports all filters/sorts, with capabilities injected through its constructor and unsupported params logged as warnings; catalogue cache serves a stale copy when a refetch fails; image proxy guards (`IMAGE_HOST_ALLOWLIST`, `IMAGE_TIMEOUT_MS`, no redirects, `nosniff`); iOS 18 minimum / Xcode 16+; README contents (§8.4); open questions resolved; Tuist future note. |
 | 0.3 | 2026-11-25 | Stale copies served for at most 24 h (`PRODUCT_STALE_MAX_AGE_SECONDS`). `errors.ts` moved to `src/` because adapters throw these errors too. Caches are created in the container and injected. `TtlCache` tests listed. Docker-only backend test command. |
+| 0.4 | 2026-11-25 | Backend implementation sync. The structure gains `domain/email.ts` and `http/params.ts`. The engine's default capabilities come from `allCapabilities()`, a function, so no shared mutable set exists. Stale images are logged as `image.stale_served`. |
+| 0.5 | 2026-11-25 | Drift fixes found in review (text only): `Logger` includes `debug`; the repository receives two `TtlCache` instances rather than a clock and limits; `SmtpEmailService` depends on a narrow `MailTransport`; test helpers live in `test/support/` and the only fixture is `products.json`; §5.10 marks each variable as required, default or optional. |
+| 0.6 | 2026-11-25 | Review changes: retry back-off after a failed refresh (`CACHE_RETRY_BACKOFF_SECONDS`, default 30); images limited to JPEG, PNG, WebP and GIF (SVG rejected); all-or-nothing catalogue validation documented (D-028); `GET /products` absent vs present-but-empty params (§6.4); iOS `Endpoints` never sends empty values, and search is disabled while the trimmed text is empty (§7.5, §7.8). |
+| 0.7 | 2026-11-25 | Cache switched to stale-while-revalidate: after the TTL the copy is returned immediately and refreshed in the background (one per key, errors always caught, back-off reused, 24 h cap still waits). `TtlCache.whenIdle()` for tests. Log events renamed to `catalogue.refresh_failed` / `image.refresh_failed`. Startup catalogue warm-up in the new `src/startup.ts`. Tests table updated. |
+| 0.8 | 2026-11-25 | Search review. Category matching is case-insensitive everywhere (`sameCategory`; `/categories/JEWELERY` returns `jewelery`). Capabilities are explicit: `InMemorySearchEngine` defaults to `textSearchOnly()`, which `container.ts` passes explicitly. **The running app does text search only.** The other filters and sorts are labelled "additional, built and unit-tested, not enabled in the running app". §6.4 has a "running app" column. |
+| 0.9 | 2026-11-25 | §12 Future: cursor-based paging added next to Tuist. Docs only. |
+| 0.10 | 2026-11-25 | Enquiry flow review. `SMTP_TIMEOUT_MS` (default 10000) is applied to the connection, greeting and socket timeouts, and a hung send → 502. The transport is built via `smtpTransportOptions(config)` and an injectable factory. Precise SES settings (587 + `SMTP_SECURE=false` with STARTTLS, or 465 + `SMTP_SECURE=true`). `productId` must be a positive integer JSON number (§6.9, §7.5). Tests added for no customer data in failure logs, control characters, productId shapes and the SMTP timeout. |
+| 0.11 | 2026-11-26 | Logger review. New §5.11 "Log events" lists every event, its level and its context. Debug events added: `config.loaded` (safe allowlisted summary), `cache.hit` / `cache.miss` / `cache.stale`, `upstream.request`, `image.fetched`, `search.executed`, `email.sending` / `email.sent`. `TtlCache` receives `name` + `Logger`; the repository, `SmtpEmailService` and the products route receive an injected `Clock` (`ports/Clock.ts`, `AppDeps.now`). Rules: debug only, no customer data or secrets, durations from the injected clock. |
+| 0.12 | 2026-11-26 | Container test seams documented in §5.3: `now` override (default `performance.now()`) and `Container.whenIdle()`. §9 states that tests never sleep. The end-to-end logging test uses a fake clock and `whenIdle()` instead of real sleeps. |
+| 0.13 | 2026-11-26 | Drift fixes (docs only): §5.2 test tree shows the sub-folders, the top-level test files and `test/support/fakeStore.ts`; §5.5 `buildEnquiryEmail` takes `receivedAt`; "Last updated" set to 2026-11-26. |
+| 0.14 | 2026-11-26 | §9.1: a config test proves that one `ConfigError` lists every invalid variable, not just the first. |
+| 0.15 | 2026-11-26 | One-command start: Compose loads `.env.example` as defaults and an optional `.env` for overrides, so `docker compose up --build` works from a fresh clone. Needs Compose 2.24+ (§3, §5.10, §8.1, §8.2, §8.4; D-029). |
+| 0.16 | 2026-11-26 | Linked the reader guides `BACKEND_ARCHITECTURE.md` and `API_CONTRACT.md` from the header. They explain and link to this blueprint, which stays the single source of truth. |
+| 0.17 | 2026-11-26 | Drift fix (docs only): §5.2 describes `TtlCache.ts` as stale-while-revalidate with retry back-off and the 24 h cap, matching the code since v0.7. |

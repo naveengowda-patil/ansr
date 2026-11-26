@@ -17,7 +17,7 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - The upstream host must be in `IMAGE_HOST_ALLOWLIST` (default `fakestoreapi.com`).
   - Redirects are not followed.
   - Requests time out after `IMAGE_TIMEOUT_MS`.
-  - Only `image/*` responses are passed through, up to `IMAGE_MAX_BYTES`.
+  - Only `image/jpeg`, `image/png`, `image/webp` and `image/gif` are passed through, up to `IMAGE_MAX_BYTES`. SVG is rejected because it can carry scripts, and the app can't render it anyway.
   - Responses carry `Cache-Control` and `X-Content-Type-Options: nosniff`.
   - Each guard has its own test.
 - **Why:**
@@ -51,8 +51,10 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - `topRated` holds the 3 highest rated.
   - `rest` holds the remainder in upstream order, with no duplicates. It is empty for a category with 3 or fewer products.
   - An unknown category returns 404.
+  - Category names match **case-insensitively** everywhere: `GET /categories/JEWELERY` works, and so does the category filter when it's enabled. The response always spells the category the way the data does (`jewelery`).
 - **Why:**
   - Two explicit lists let the app render two sections without re-deriving the rule.
+  - Case is not meaningful in a category name. Returning the data's spelling keeps one canonical name for display and links.
   - It is a domain function, not search-engine sorting.
 - **Blueprint:** §2 AC-2, §5.5, §6.8
 
@@ -87,16 +89,28 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - Each engine declares its capabilities. Anything a request uses that the engine doesn't support gets:
     - a 400 `VALIDATION_ERROR` naming it, and
     - a warning in the logs (param, value, engine name) through the injected logger.
-  - `InMemorySearchEngine` supports every filter and sort. Its capabilities are passed in through the constructor, defaulting to everything, so tests can create it with fewer.
+  - **The running app does text search only, by design:** `q`, `relevance` and paging.
+    - `container.ts` creates `new InMemorySearchEngine({ capabilities: textSearchOnly() })`.
+    - With no options, the engine is also text-only, so nothing extra is enabled by default.
+    - Capabilities are always explicit: `textSearchOnly()` or `allCapabilities()`.
+  - **Additional, built and unit-tested, not enabled in the running app:**
+    - the `category`, `minPrice`, `maxPrice` and `minRating` filters;
+    - the `rating_desc`, `price_asc`, `price_desc` and `title_asc` sorts.
+    - They are switched on by passing more capabilities (`allCapabilities()`) or by plugging in a real engine, with no route or contract change.
+  - The full `GET /products` contract and its shape validation stay in place, and paging is always supported.
   - Index sync (resolved OQ-2): before each search, the route hands the cached catalogue to `engine.index()`, which is skipped when the catalogue hasn't changed.
   - On iOS, every `ProductQuery` field is optional and only non-nil fields are sent.
+- **History:** This narrows the earlier choice that the in-memory engine "supports all filters and sorts" by default. After review, the running app was limited to what the acceptance criteria need (AC-3, text search), and capabilities were made explicit, so nothing is enabled by accident.
 - **Why:**
   - A real engine plugs in without touching routes or the app.
+  - Only enabling what AC-3 needs keeps the live surface small and honest. The extra logic is ready, but nobody depends on it yet.
   - Rejecting loudly means clients never get silently wrong results.
   - The warning shows when clients rely on something the current engine can't do.
-- **Proof:** Two tests cover this.
-  - The real in-memory engine with limited capabilities returns 400 and logs the warning.
+- **Proof:**
+  - The default engine returns 400 plus a warning for `category`, `minPrice`, `maxPrice`, `minRating` and every non-relevance sort.
   - A fake engine that supports everything receives the exact parsed query.
+  - The same real engine created with `allCapabilities()` serves the extra filters and sorts.
+- **Known limits:** see "Known limits" below.
 - **Blueprint:** §5.4, §5.5, §5.7, §6.4, §7.5, §9.1
 
 ### D-009 — One error envelope, four codes
@@ -118,31 +132,53 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - An unknown product returns 404.
   - The email is plain text, goes to `SALES_INBOX_EMAIL` from `MAIL_FROM`, and has `Reply-To` set to the customer.
   - Sending is synchronous. A failure returns 502, and the app shows an error with Retry. There is no queueing.
+  - Sending is bounded by `SMTP_TIMEOUT_MS` (10 s), which sets the connection, greeting and socket timeouts. A hanging mail server therefore gives a 502 within seconds, not after nodemailer's multi-minute defaults.
 - **Why:**
   - This prevents header injection and keeps behaviour predictable.
   - A queue (for example SQS) is the next step if delivery guarantees are needed.
 - **Blueprint:** §5.8, §6.9
 
-### D-011 — Upstream timeout and cache, with stale fallback
-- **Decision:**
-  - Every Fake Store call has a timeout (`PRODUCT_API_TIMEOUT_MS`).
-  - The whole catalogue is cached in memory for `PRODUCT_CACHE_TTL_SECONDS` (default 300).
-  - After the TTL expires, the backend refetches. If Fake Store fails, it serves the last good copy and logs a warning, as long as that copy is at most 24 hours old (`PRODUCT_STALE_MAX_AGE_SECONDS`).
-  - It returns 502 when there is no copy, or the copy is older than the cap.
-  - Concurrent refetches share one request.
+### D-011 — How the cache works: stale-while-revalidate, with back-off and a 24 h cap
+- **Decision:** The catalogue (one snapshot) and each image are cached in memory, and every Fake Store call has a timeout (`PRODUCT_API_TIMEOUT_MS`, 5 s).
+  - **Fresh** (younger than `PRODUCT_CACHE_TTL_SECONDS`, 5 min): served from memory.
+  - **Expired:** the copy is still returned **immediately**, and one background refresh fetches a new copy for the next requests.
+    - **Refresh succeeds:** the copy is replaced.
+    - **Refresh fails:** one warning is logged and the old copy keeps being served. No new refresh starts for `CACHE_RETRY_BACKOFF_SECONDS` (30 s).
+  - **Older than `PRODUCT_STALE_MAX_AGE_SECONDS` (24 h):** the request waits for a refresh and gets a 502 if it fails.
+  - **No copy at all** (first load): the request waits for the fetch. A warm-up at startup normally does this before any user arrives.
+- **What users see:**
+  - Users never wait for Fake Store after the first load.
+  - Data is at most one refresh behind: normally at most one TTL old, plus the time a refresh takes.
+  - During an outage, the data can be up to 24 hours old, and a warning is logged every 30 seconds.
 - **Why:**
   - The catalogue is small (about 20 items), so one snapshot serves every read endpoint.
-  - The stale fallback keeps the app working through short upstream outages, and Fake Store is a free public API that does go down.
+  - With a plain TTL, one unlucky request every 5 minutes waits for Fake Store, up to the 5 s timeout when it's slow. Stale-while-revalidate takes Fake Store's speed off the request path.
+  - The back-off stops a struggling upstream being retried on every request. The cap stops very old data (for example, old prices) being shown as current.
+  - Fake Store is a free public API that does go down.
 - **Trade-offs:**
-  - During an outage the app can show data up to 24 hours old. Each time it does, a warning is logged. After 24 hours, a clear error is better than data that may be wrong (for example, old prices).
+  - The first request after the TTL gets data that is up to one refresh old. For a product catalogue that's fine; for stock levels or prices with legal weight it wouldn't be.
+  - Recovery is noticed up to 30 seconds late.
+  - Background refreshes run outside any request. Their errors are always caught and logged, so they never become unhandled rejections.
   - Each instance has its own cache. Redis or ElastiCache can replace it later behind the same adapter.
-- **Tests:**
-  - Fresh copy is served without an upstream call.
-  - Expired copy with a successful refetch.
-  - Expired copy with a failed refetch serves the stale copy.
-  - A copy older than 24 hours with a failed refetch returns 502.
-  - No copy and a failed fetch returns 502.
+  - With no usable copy there's no back-off, so each request still tries upstream. Failures are never cached.
+- **Tests (catalogue and images):**
+  - An expired copy is returned without waiting for upstream.
+  - Concurrent requests trigger exactly one background refresh.
+  - A successful refresh replaces the copy.
+  - A failed refresh keeps the old copy and logs once.
+  - The back-off is respected.
+  - Past the cap, the request waits and gets a 502.
+  - A failed warm-up doesn't stop the server.
 - **Blueprint:** §5.6, §9.1
+
+### D-028 — One malformed upstream product rejects the whole catalogue
+- **Decision:** The Fake Store response is validated as a whole. If any product fails the schema (a missing field, a wrong type, a rating out of range), the whole response is rejected as `UpstreamError`. The API then serves the stale copy (D-011) or returns 502.
+- **Why:**
+  - We never serve partly valid data.
+  - Dropping only the bad items would quietly change featured selection, category top-3 and search results, and nobody would notice.
+  - Rejecting the whole response is loud: a warning, or a 502 that shows up in logs.
+- **Trade-off:** One bad record can take the catalogue down once the stale copy runs out. With a real database, per-record validation at import time is the better place for this.
+- **Blueprint:** §5.6
 
 ### D-012 — Product detail fetches by id
 - **Decision:** The detail screen calls `GET /products/{id}` instead of receiving the model.
@@ -262,6 +298,19 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 
 ---
 
+### D-029 — One-command start: `.env.example` is the Compose default, `.env` only overrides
+- **Decision:**
+  - `docker-compose.yml` loads `env_file: .env.example`, then `.env` with `required: false`.
+  - `docker compose up --build` works from a fresh clone with nothing to copy.
+  - A local `.env` overrides any variable.
+- **Why:**
+  - Before this, a reviewer had to run `cp .env.example .env` first, or Compose failed.
+  - One command is the smallest possible "run it locally" story.
+- **Trade-offs:**
+  - Needs Docker Compose 2.24 or newer for the optional `env_file` entry.
+  - `.env.example` is now runtime config, not just documentation, so it must stay secret-free and always runnable.
+- **Blueprint:** §3, §5.10, §8.1, §8.2
+
 ## Process
 
 ### D-015 — CLAUDE.md holds rules only; the blueprint holds everything project-specific
@@ -286,11 +335,20 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 
 | Dropped / simplified | Why |
 |---|---|
-| No sort/filter UI on iOS | The API and engine already support it (D-008), so adding it later is app-only work. |
+| Text search only in the running app; no sort/filter UI on iOS | The contract and the extra filter/sort logic are built and unit-tested (D-008). Enabling them is a capability switch on the backend plus app-only UI work. |
 | No rate limiting or spam protection on enquiries | Out of scope for a PoC with no public deployment. Add it at the edge (API Gateway or WAF) or as middleware before going live. |
 | No auth and no admin screen | Featured ids come from config (D-002), so nothing needs an admin UI yet. |
 | No enquiry persistence | The email is the record for now. A table or queue comes when delivery guarantees or reporting are needed. |
 | No infrastructure-as-code | The Docker image, `/health` and env-based config are the AWS-ready parts. CDK or Terraform come with the first real environment. |
+
+## Known limits (search)
+
+| Limit | What it means today | Where it gets fixed |
+|---|---|---|
+| Relevance isn't real relevance yet | `relevance` keeps the upstream order. A product that matches in the title ranks no higher than one that matches in the description. | A real engine ranks by match quality. |
+| No typo tolerance or word splitting | Matching is one case-insensitive phrase, so "rng" or "ring gold" won't find "Gold Ring". | The job of the future engine (Typesense, OpenSearch, Postgres full-text). |
+| Everything is in memory | Fine for 20 products, not for 20,000: each search scans the whole catalogue in the API process. | That's why search sits behind `ProductSearchEngine`: a real engine is one adapter. |
+| Indexing is "keep the latest catalogue" | The route hands the engine the cached catalogue before each search. | A real engine is fed by a sync job when products change, not before each search. |
 
 ## How it grows (now → production)
 
@@ -298,7 +356,7 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 |---|---|---|
 | Fake Store | Postgres or DynamoDB | A new `ProductRepository` adapter, wired in `container.ts` |
 | In-memory search | **Postgres full-text** (no new infra if the store is Postgres), **OpenSearch** (AWS managed, scale and relevance tuning) or **Typesense** (simple, typo tolerant) | A new `ProductSearchEngine` adapter declaring its capabilities |
-| Mailpit | Amazon SES | SMTP config only, using the same `SmtpEmailService` |
+| Mailpit | Amazon SES | SMTP config only, using the same `SmtpEmailService`, with no code change:<br>• `SMTP_HOST=email-smtp.<region>.amazonaws.com` and SES SMTP credentials in `SMTP_USER` / `SMTP_PASS`;<br>• **port 587 with `SMTP_SECURE=false`**, where the connection is upgraded with STARTTLS (SES requires it);<br>• or **port 465 with `SMTP_SECURE=true`**, with TLS from the start. |
 | Docker Compose | ECS Fargate or App Runner | Nothing: the same image and `/health` |
 | `.env` | Secrets Manager or Parameter Store | Nothing: injected as env vars by the task definition |
 | In-memory cache | Redis / ElastiCache | Behind the same repository adapter |
@@ -309,6 +367,12 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 - **Move the iOS project to Tuist.**
   - The project is generated from a Swift manifest, so there are no `.xcodeproj` merge conflicts.
   - It splits into modules: `Core`, `Networking`, `DesignSystem`, `Features`.
+- **Switch search to cursor-based paging.**
+  - Today paging is offset-based (`page`, `pageSize`).
+  - If the catalogue refreshes mid-browse, items can shift between pages, so a user may see one twice or miss one.
+  - A cursor (for example, the last item's sort key and id) keeps pages stable.
+- **Request logging.** One `info` line per request (`method`, `path`, `status`, `durationMs`), so normal traffic and response times are visible. Today only rejected (4xx) and failed (5xx) requests are logged.
+- **Request ids.** Generate one per request, or accept an incoming `X-Request-Id`. Add it to every log line and return it in a response header, so all the lines for one request can be tied together.
 - **Set up environments: Dev, Staging and Prod.**
   - Each gets its own xcconfig (base URL, app name, bundle id).
   - Each gets its own scheme.
