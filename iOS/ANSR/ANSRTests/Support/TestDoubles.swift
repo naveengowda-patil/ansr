@@ -2,22 +2,31 @@ import UIKit
 @testable import ANSR
 
 /// Product repository test double: returns the configured results, records calls, and can hold the next
-/// `featured()` or `search(_:)` call.
+/// `featured()`, `search(_:)` or `product(id:)` call.
 actor StubProductRepository: ProductRepository {
     private var featuredResult: Result<[Product], APIError>
     private var searchResult: Result<ProductPage, APIError>
+    private var productResult: Result<Product, APIError>
     private var featuredHold: Hold?
     private var searchHold: Hold?
+    private var productHold: Hold?
     private(set) var featuredCallCount = 0
     private(set) var searchQueries: [ProductQuery] = []
+    private(set) var requestedProductIds: [Int] = []
 
     init(
         featured: Result<[Product], APIError> = .success([]),
-        search: Result<ProductPage, APIError> = .success(ProductPage(items: [], total: 0, page: 1, pageSize: 20))
+        search: Result<ProductPage, APIError> = .success(ProductPage(items: [], total: 0, page: 1, pageSize: 20)),
+        product: Result<Product, APIError> = .failure(.notFound)
     ) {
         self.featuredResult = featured
         self.searchResult = search
+        self.productResult = product
     }
+
+    func setProduct(_ result: Result<Product, APIError>) { productResult = result }
+    /// Holds only the next call to `product(id:)`; later calls go straight through.
+    func holdProduct(_ hold: Hold?) { productHold = hold }
 
     func setSearch(_ result: Result<ProductPage, APIError>) { searchResult = result }
     /// Holds only the next call to `search(_:)`; later calls go straight through.
@@ -46,7 +55,12 @@ actor StubProductRepository: ProductRepository {
     }
 
     func product(id: Int) async throws(APIError) -> Product {
-        throw .notFound
+        requestedProductIds.append(id)
+        if let hold = productHold {
+            productHold = nil
+            await hold.wait()
+        }
+        return try productResult.get()
     }
 }
 
@@ -129,6 +143,21 @@ final class RecordingSearchResultsNavigator: SearchResultsNavigating {
 
     func showProduct(id: Int) { calls.append(.product(id: id)) }
     func showSearchResults(query: String) { calls.append(.searchResults(query: query)) }
+}
+
+/// Records every Product detail navigation call.
+@MainActor
+final class RecordingProductDetailNavigator: ProductDetailNavigating {
+    struct Enquiry: Equatable {
+        let productId: Int
+        let productTitle: String
+    }
+
+    private(set) var enquiries: [Enquiry] = []
+
+    func showEnquiry(productId: Int, productTitle: String) {
+        enquiries.append(Enquiry(productId: productId, productTitle: productTitle))
+    }
 }
 
 /// Products shaped like the backend's (BLUEPRINT §6.1).

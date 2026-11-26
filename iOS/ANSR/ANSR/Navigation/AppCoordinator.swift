@@ -90,8 +90,7 @@ import SwiftUI
         case .category(let name):
             .category(makeCategory(name: name))
         case .product(let id):
-            // Placeholder until Product detail lands.
-            .placeholder(title: Strings.placeholderProduct(id: id))
+            .productDetail(makeProductDetail(id: id))
         case .searchResults(let query):
             .searchResults(makeSearchResults(query: query))
         }
@@ -104,9 +103,19 @@ import SwiftUI
             CategoryView(viewModel: viewModel)
         case .searchResults(let viewModel):
             SearchResultsView(viewModel: viewModel)
-        case .placeholder(let title):
-            RoutePlaceholderView(title: title)
+        case .productDetail(let viewModel):
+            ProductDetailView(viewModel: viewModel)
         }
+    }
+
+    private func makeProductDetail(id: Int) -> ProductDetailViewModel {
+        ProductDetailViewModel(
+            productId: id,
+            productRepository: dependencies.productRepository,
+            imageProvider: dependencies.imageProvider,
+            navigator: self,
+            locale: dependencies.locale
+        )
     }
 
     private func makeSearchResults(query: String) -> SearchResultsViewModel {
@@ -133,8 +142,8 @@ import SwiftUI
     private func makeSheet(for sheet: Sheet) -> some View {
         // Placeholder until the enquiry sheet lands.
         switch sheet {
-        case .enquiry(let productId, _):
-            RoutePlaceholderView(title: Strings.placeholderEnquiry(productId: productId))
+        case .enquiry(_, let productTitle):
+            RoutePlaceholderView(title: Strings.placeholderEnquiry(productTitle: productTitle))
         }
     }
 }

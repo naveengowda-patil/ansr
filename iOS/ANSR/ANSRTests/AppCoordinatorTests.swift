@@ -87,13 +87,25 @@ struct AppCoordinatorTests {
         #expect(coordinator.path == [.searchResults(query: "ring")])
     }
 
-    @Test("Routes without a screen yet show a placeholder naming them")
-    func otherRoutesArePlaceholders() {
-        guard case .placeholder(let title) = coordinator.screen(for: .product(id: 5)) else {
-            Issue.record("Expected a placeholder")
+    @Test("The product route builds the Product detail screen for that id; Enquire sets the sheet and a swipe-down clears it")
+    func productRouteBuildsDetailScreen() async {
+        guard case .productDetail(let viewModel) = coordinator.screen(for: .product(id: 5)) else {
+            Issue.record("Expected the Product detail screen")
             return
         }
-        #expect(title == "Product 5")
+        #expect(viewModel.productId == 5)
+
+        await viewModel.load()
+        guard case .loaded(let product) = viewModel.state else {
+            Issue.record("Expected the mock product 5 to load, got \(viewModel.state)")
+            return
+        }
+
+        viewModel.didTapEnquire()
+        #expect(coordinator.sheet == .enquiry(productId: 5, productTitle: product.title))
+
+        coordinator.sheetBinding.wrappedValue = nil
+        #expect(coordinator.sheet == nil)
     }
 
     @Test("showEnquiry presents the sheet, and dismissSheet or a swipe-down clears it")
