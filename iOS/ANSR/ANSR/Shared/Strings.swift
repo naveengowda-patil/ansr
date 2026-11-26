@@ -29,7 +29,6 @@ enum Strings {
 
     // MARK: Route placeholders (until each screen lands)
     static func placeholderProduct(id: Int) -> String { "Product \(id)" }
-    static func placeholderCategory(name: String) -> String { "Category \(name)" }
     static func placeholderSearch(query: String) -> String { "Search: \(query)" }
     static func placeholderEnquiry(productId: Int) -> String { "Enquiry for product \(productId)" }
 

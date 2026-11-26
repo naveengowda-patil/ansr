@@ -47,6 +47,34 @@ struct AppCoordinatorTests {
         #expect(coordinator.path == [.product(id: 5)])
     }
 
+    @Test("The category route builds the Category screen for that name, with the coordinator as its navigator")
+    func categoryRouteBuildsCategoryScreen() async {
+        guard case .category(let viewModel) = coordinator.screen(for: .category(name: "jewelery")) else {
+            Issue.record("Expected the Category screen")
+            return
+        }
+        #expect(viewModel.navigationTitle == "Jewelery")
+
+        await viewModel.load()
+        guard case .loaded(let data) = viewModel.state else {
+            Issue.record("Expected the mock jewelery category to load, got \(viewModel.state)")
+            return
+        }
+        #expect(data.title == "Jewelery")
+
+        viewModel.didTapProduct(id: 5)
+        #expect(coordinator.path == [.product(id: 5)])
+    }
+
+    @Test("Routes without a screen yet show a placeholder naming them")
+    func otherRoutesArePlaceholders() {
+        guard case .placeholder(let title) = coordinator.screen(for: .product(id: 5)) else {
+            Issue.record("Expected a placeholder")
+            return
+        }
+        #expect(title == "Product 5")
+    }
+
     @Test("showEnquiry presents the sheet, and dismissSheet or a swipe-down clears it")
     func sheetPresentsAndDismisses() {
         coordinator.showEnquiry(productId: 5, productTitle: "Bracelet")

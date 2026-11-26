@@ -84,17 +84,38 @@ import SwiftUI
         ))
     }
 
-    @ViewBuilder
-    private func makeDestination(for route: Route) -> some View {
-        // Placeholders until Category, Product detail and Search results land, each from its own factory.
+    /// The screen a route builds. Internal, not private, so tests can check which screen a route opens and how it's wired.
+    func screen(for route: Route) -> Screen {
         switch route {
         case .category(let name):
-            RoutePlaceholderView(title: Strings.placeholderCategory(name: name))
+            .category(makeCategory(name: name))
         case .product(let id):
-            RoutePlaceholderView(title: Strings.placeholderProduct(id: id))
+            // Placeholder until Product detail lands.
+            .placeholder(title: Strings.placeholderProduct(id: id))
         case .searchResults(let query):
-            RoutePlaceholderView(title: Strings.placeholderSearch(query: query))
+            // Placeholder until Search results lands.
+            .placeholder(title: Strings.placeholderSearch(query: query))
         }
+    }
+
+    @ViewBuilder
+    private func makeDestination(for route: Route) -> some View {
+        switch screen(for: route) {
+        case .category(let viewModel):
+            CategoryView(viewModel: viewModel)
+        case .placeholder(let title):
+            RoutePlaceholderView(title: title)
+        }
+    }
+
+    private func makeCategory(name: String) -> CategoryViewModel {
+        CategoryViewModel(
+            name: name,
+            categoryRepository: dependencies.categoryRepository,
+            imageProvider: dependencies.imageProvider,
+            navigator: self,
+            locale: dependencies.locale
+        )
     }
 
     @ViewBuilder

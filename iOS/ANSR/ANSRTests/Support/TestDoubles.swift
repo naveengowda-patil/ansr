@@ -33,16 +33,26 @@ actor StubProductRepository: ProductRepository {
     }
 }
 
-/// Category repository test double: returns the configured list and counts calls.
+/// Category repository test double: returns the configured results, records calls, and can hold the next `category(_:)` call.
 actor StubCategoryRepository: CategoryRepository {
     private var categoriesResult: Result<[String], APIError>
+    private var categoryResult: Result<CategoryProducts, APIError>
+    private var categoryHold: Hold?
     private(set) var categoriesCallCount = 0
+    private(set) var requestedCategories: [String] = []
 
-    init(categories: Result<[String], APIError> = .success([])) {
+    init(
+        categories: Result<[String], APIError> = .success([]),
+        category: Result<CategoryProducts, APIError> = .failure(.notFound)
+    ) {
         self.categoriesResult = categories
+        self.categoryResult = category
     }
 
     func setCategories(_ result: Result<[String], APIError>) { categoriesResult = result }
+    func setCategory(_ result: Result<CategoryProducts, APIError>) { categoryResult = result }
+    /// Holds only the next call to `category(_:)`; later calls go straight through.
+    func holdCategory(_ hold: Hold?) { categoryHold = hold }
 
     func categories() async throws(APIError) -> [String] {
         categoriesCallCount += 1
@@ -50,7 +60,12 @@ actor StubCategoryRepository: CategoryRepository {
     }
 
     func category(_ name: String) async throws(APIError) -> CategoryProducts {
-        throw .notFound
+        requestedCategories.append(name)
+        if let hold = categoryHold {
+            categoryHold = nil
+            await hold.wait()
+        }
+        return try categoryResult.get()
     }
 }
 
@@ -77,6 +92,14 @@ final class RecordingHomeNavigator: HomeNavigating {
     func showSearchResults(query: String) { calls.append(.searchResults(query: query)) }
 }
 
+/// Records every Category navigation call, in order.
+@MainActor
+final class RecordingCategoryNavigator: CategoryNavigating {
+    private(set) var shownProducts: [Int] = []
+
+    func showProduct(id: Int) { shownProducts.append(id) }
+}
+
 /// Products shaped like the backend's (BLUEPRINT §6.1).
 enum Fixtures {
     static func product(id: Int, title: String, price: String, rate: Double, count: Int, category: String = "jewelery") -> Product {
@@ -101,4 +124,17 @@ enum Fixtures {
     ]
 
     static let categories = ["men's clothing", "jewelery", "electronics", "women's clothing"]
+
+    /// `GET /categories/jewelery`: the top 3 by rating, then the rest, each in API order.
+    static let jewelery = CategoryProducts(
+        category: "jewelery",
+        topRated: [
+            product(id: 5, title: "Bracelet", price: "695", rate: 4.6, count: 400),
+            product(id: 7, title: "Princess Ring", price: "9.99", rate: 3, count: 400),
+            product(id: 8, title: "Earrings", price: "10.99", rate: 1.9, count: 100),
+        ],
+        rest: [
+            product(id: 6, title: "Micropave", price: "168", rate: 3.9, count: 70),
+        ]
+    )
 }
