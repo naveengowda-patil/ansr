@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.20, backend implemented, iOS foundation built (phase 1) |
+| Status | v0.21, backend implemented, iOS foundation and Home built (phase 2.1) |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -709,8 +709,10 @@ enum Sheet: Identifiable, Hashable {
 | `dismissSheet()` | `dismissPresented()` |
 
 - **Only the private functions write `path` and `sheet`:**
-  - The `NavigationStack` gets a binding whose setter calls the private `pop(to:)` when the system shortens the path (Back button or back-swipe).
+  - The `NavigationStack` gets a binding whose setter calls the private `pop(to:)` when the system shortens the path (Back button or back-swipe). A setter value that isn't a shorter prefix of the current path is ignored, so the binding can never push or replace a screen.
   - The sheet binding's setter calls `dismissPresented()` when the system clears it (swipe down).
+  - The two bindings (`pathBinding`, `sheetBinding`) are **internal, not private**, so tests can drive them the way the system does. They can still only pop and dismiss.
+  - Checked at runtime in phase 2.1: Back button and back-swipe both reach `pop(to:)`, the stack stays in step with `path`, and Home keeps its content. No change to the binding was needed.
 - **View models hold their navigator `weak`.** They never reference `AppCoordinator` or `Route`.
 - **Not used:** `NavigationLink(destination:)`, `NavigationLink(value:)`, `isPresented` flags, and navigation state in views or view models. Navigation is always view model intent → navigator → coordinator.
 - **Search** pushes a new `.searchResults` screen on every submit, so Back returns to the previous search (D-037).
@@ -807,6 +809,7 @@ protocol ImageProvider: Sendable {
   - Each downloaded image is written shortly after download, with pending writes batched.
   - Anything still pending is flushed when the app goes to the background (`UIApplication.didEnterBackgroundNotification`). The provider subscribes to it privately when it starts, through `NotificationCenter.notifications(named:)` in a task it cancels on `deinit`, so the single public function stays the only one.
   - The composition root sets the write delay to **2 seconds**.
+  - **The background flush runs inside a `UIApplication` background task** (`beginBackgroundTask` / `endBackgroundTask`), so iOS gives it time to finish before suspending the app. The task ends when the flush completes, or from the expiration handler if time runs out first. This is private; `image(forProductId:)` stays the only public function. The provider receives the `UIApplication` from the composition root.
   - Nothing relies on an exit callback, because iOS often terminates suspended apps without one.
 - **Disk:**
   - One file per product id in `Caches/ProductImages/`, holding the bytes as received.
@@ -816,8 +819,8 @@ protocol ImageProvider: Sendable {
 
 **Tile images are driven by the view model** (D-022):
 - Each view model that shows images owns a `ProductImageLoader` (`@MainActor @Observable`), which calls `ImageProvider` and keeps one `ProductImageState` per product id: `loading`, `loaded(UIImage)` or `failed`.
-- The view reports that a tile appeared (`viewModel.tileAppeared(id:)`). It renders `viewModel.imageState(for:)` as a placeholder, the image, or a "failed" icon.
-- Each id is requested once per screen.
+- The view reports that a tile appeared (`viewModel.tileAppeared(id:)`) from the tile's `.task`, so the request is cancelled if the tile goes away first. It renders `viewModel.imageState(for:)` as a placeholder, the image, or a "failed" icon.
+- Each id is requested once per screen. A request cancelled because its tile went away is forgotten, so the next appearance asks again.
 - The product detail image works the same way.
 
 ### 7.7 Launch, configuration and DI
@@ -835,6 +838,7 @@ protocol ImageProvider: Sendable {
 4. **On success**, the window's root is a `UIHostingController` with `coordinator.rootView()`: Home, with the theme injected. **On failure**, the root is a `UIHostingController` with `ConfigurationErrorView`. `SceneDelegate` keeps the coordinator alive.
 
 - **No network calls before the UI.** The bootstrapper only reads `Info.plist` and builds objects.
+- **Hosting tests** (D-043): the bootstrapper also receives the process environment. When `XCTestConfigurationFilePath` is set (Xcode sets it in an app that hosts a test bundle), `configure()` returns `.hostingTests`, nothing is built, and the window shows an empty view controller. So a test run never loads Home, never calls the backend and never touches the image cache.
 - **No splash.** Home's spinner is the launch state.
 - **No refresh** when the app comes back from the background (§12).
 
@@ -868,7 +872,7 @@ protocol ImageProvider: Sendable {
 - **`AppDependencies`** exposes **protocols only**:
   - `productRepository`, `categoryRepository`, `enquiryRepository` and `imageProvider`;
   - plus `theme: AppTheme` and `locale: Locale`.
-- **`AppDependencies.live(_:)`** is the **composition root**: the only place concrete types are created.
+- **`AppDependencies.live(_:)`** is the **composition root**: the only place concrete types are created. It is `@MainActor`, because it hands `UIApplication.shared` to `HybridImageProvider`.
   - `URLSession`, `URLSessionNetworkClient` and the `Remote…Repository` types.
   - `HybridImageProvider`, with its limits.
   - The standard `AppTheme`.
@@ -887,7 +891,7 @@ protocol ImageProvider: Sendable {
 | **Product detail** | `.product(id:)` | `ProductDetailViewModel` | `product(id:)` → `ViewState<ProductDetailViewData>` | 404: "This product is no longer available." | Enquire → `showEnquiry` |
 | **Enquiry** (sheet) | `Sheet.enquiry` | `EnquiryViewModel` | `submit(EnquiryRequest)` | none: it's a form (§7.8.5) | submit; Done → `dismissSheet` |
 
-**Phase 1 (foundation):** until the screens are built in phase 2, `makeHome()` returns `HomePlaceholderView` (a "Catalogue" title and "Products are on their way."), and the routes and the sheet have no screens yet. The placeholder is removed when `HomeView` lands.
+**Built so far (phase 2.1):** Home is real. Until each of the other screens lands, `makeDestination(for:)` and `makeSheet(for:)` show a `RoutePlaceholderView` that names what opened it ("Product 5", "Category jewelery", "Search: ring", "Enquiry for product 5"), so navigation can be checked at runtime. Each placeholder is replaced by its screen's factory (`makeCategory(name:)` and so on).
 
 Every screen except Enquiry uses the states and loading rules in §7.11. Any error other than the 404s above shows the error state with Retry.
 
@@ -1137,7 +1141,7 @@ The iOS tests cover only what proves AC-1…AC-5, plus the coordinator navigatio
   - The network client runs on a session with a stub `URLProtocol`.
 - **No sleeps:**
   - Tests await the view model's `async` intents directly.
-  - An in-between state (`submitting`) is observed by holding a test double's reply with a continuation until after the assertion.
+  - An in-between state (`submitting`, or `loading` during a retry) is observed by holding a test double's reply with a continuation until after the assertion. A hold catches only the next call, so a broken "ignore a second load" guard fails a call-count check instead of hanging.
 
 | Area | AC | How | Must cover |
 |---|---|---|---|
@@ -1147,6 +1151,7 @@ The iOS tests cover only what proves AC-1…AC-5, plus the coordinator navigatio
 | `SearchResultsViewModel` | AC-3 | Mock product repository, recording `SearchResultsNavigating` | • the repository receives a `ProductQuery` with only `q` set to the term;<br>• exactly the returned products are shown, with the "{n} results for '{q}'" summary;<br>• 0 results → `empty` with "No products match '{q}'.";<br>• a new submit → `showSearchResults(query:)`, and a blank one is ignored. |
 | `ProductDetailViewModel` | AC-4 | Mock product repository, recording `ProductDetailNavigating` | • it loads `product(id:)` for its id;<br>• it maps title, price, rating, category and description;<br>• 404 → `empty`;<br>• Enquire → `showEnquiry(productId:productTitle:)`. |
 | `EnquiryViewModel` | AC-5 | Mock enquiry repository (succeeds, fails or holds), recording `EnquiryNavigating` | **Valid:**<br>• `editing` → `submitting` → `submitted` with the thank-you text;<br>• the request has `productId` as an `Int` and trimmed fields.<br>**Invalid** (blank name, a line break in the name, a bad email, over a length limit):<br>• Submit is disabled and no request is made.<br>**Failure:**<br>• `failed(message)`, every field kept, Submit enabled again.<br>**Done** → `dismissSheet()`. |
+| `AppBootstrapper` | All (no network in tests) | The real bootstrapper with a given info dictionary and environment | • the test process carries `XCTestConfigurationFilePath`;<br>• with it set, `configure()` returns `.hostingTests` and builds nothing;<br>• an invalid `API_BASE_URL` gives `.configurationError` naming the key. |
 | `AppCoordinator` | Navigation for AC-1…AC-5 | The real coordinator with `AppDependencies.mock` | • `showProduct`, `showCategory` and `showSearchResults` push the right `Route`;<br>• two searches push two screens;<br>• the path binding shortening the path pops;<br>• `showEnquiry` presents the sheet, and `dismissSheet` clears it. |
 
 **Manual walkthrough before the iOS PR:** walk through AC-1…AC-5 by hand on **both schemes** (D-040).
@@ -1243,3 +1248,4 @@ None open.
 | 0.18 | 2026-11-26 | iOS design (docs only). §7 rewritten:<br>• the project at `iOS/ANSR/ANSR.xcodeproj` with targets `ANSR` and `ANSRTests` (no UI tests), Swift 6 with default isolation `nonisolated` and Approachable Concurrency off, simulator only;<br>• the UIKit lifecycle hosting SwiftUI through `AppBootstrapper`;<br>• Debug and Prod configurations with shared schemes;<br>• dumb views and two model layers (data models and per-screen view data);<br>• repositories named by role and how (`ProductRepository` / `RemoteProductRepository`, and so on), replacing "services";<br>• `HybridImageProvider` (memory → disk → network);<br>• one navigator protocol per view model, with thin coordinator entry points;<br>• the Home, Category, Search results, Product detail and Enquiry screens;<br>• `ViewState` with no idle state;<br>• formatting, `Strings` and theme rules; accessibility out of scope.<br>The §7.8 screens table is fixed, and 7.10 Repositories and 7.11 Screen states are new. §1 out of scope, §4 overview and layout, §8.1, §8.2 and §8.4 iOS run and test steps, §9.2 requirement-linked iOS tests with a manual walkthrough on both schemes, §9.3 iOS column, and §12 iOS future items are all updated. Header links `FRONTEND_ARCHITECTURE.md`. D-030 to D-041. |
 | 0.19 | 2026-11-26 | iOS phase 1, the foundation. §7.1 says how `Info.plist` is wired (its own file merged with the generated one, the scene manifest naming `SceneDelegate`, the ATS local-networking exception in Debug only through Info.plist preprocessing, D-042) and how xcconfig URLs are written (`http:/$()/…`). Details settled while building: `CoordinatorView` (§7.4); per-segment path encoding, query encoding of `+&=?#/`, the encodable body and the status-and-code rule (§7.5); `ProductImageState`, `ImageProviderError.undecodableImage`, the 2 s write delay and the cancellable background subscription (§7.6); the configuration error names the bad key (§7.7, §7.11); `ProductTileViewData` lives in `Shared/` (§7.2, §7.3); the phase 1 placeholder Home (§7.8). |
 | 0.20 | 2026-11-26 | §7.1: iPhone only is now explicit (`TARGETED_DEVICE_FAMILY = 1` on both targets). The project had iPhone and iPad set, which contradicted §7.1; the project now matches. |
+| 0.21 | 2026-11-26 | iOS phase 2.1, Home. §7.4: the path and sheet bindings are internal for tests and can only pop or dismiss; the path binding was checked at runtime and needed no fix. §7.6: the background flush runs inside a `UIApplication` background task, which ends on completion or expiry; tiles report appearance from `.task`, and a cancelled image request is retried on the next appearance. §7.7: `.hostingTests`, so a test run builds nothing and never calls the backend (D-043); `live(_:)` is `@MainActor`. §7.8: route placeholders name the route. §9.2: `AppBootstrapper` tests, and holds catch only the next call. D-034 updated. |

@@ -47,7 +47,8 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
   - **No refresh** when the app returns from the background.
   - **`AppDependencies`** exposes protocols only: the three repositories and the image provider, plus the theme and the locale. `live(_:)` is the only place concrete types are created.
 - **Config used:** `API_BASE_URL` and `REQUEST_TIMEOUT_SECONDS` from `Info.plist` (section 2).
-- **Tests:** none of its own. The bootstrap is covered by the manual walkthrough.
+- **Hosting tests:** when the app is only there to host the unit tests, the bootstrapper builds nothing, so a test run never calls the backend ([D-043](../DECISIONS.md)).
+- **Tests:** `AppBootstrapper` tests cover the test-host case and a bad URL. The rest of the bootstrap is covered by the manual walkthrough.
 - **Rules:**
   - [§7.7](BLUEPRINT.md#77-launch-configuration-and-di) (launch, configuration, DI)
   - [D-030](../DECISIONS.md) (lifecycle and bootstrapper)
@@ -148,7 +149,7 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
   - **Lookup:** memory (about 100 images), then disk (the Caches folder, about 50 MB, oldest removed first, no expiry), then the backend.
     - A downloaded image goes into memory at once.
     - Two requests for the same image share one download.
-  - **Persisting:** images are written to disk shortly after download, and anything pending is flushed when the app goes to the background. Nothing waits for an exit, because iOS often kills suspended apps without one.
+  - **Persisting:** images are written to disk shortly after download, and anything pending is flushed when the app goes to the background, inside a background task so iOS lets the flush finish. Nothing waits for an exit, because iOS often kills suspended apps without one.
   - **At launch:** saved images are loaded back into memory in the background, without delaying Home.
   - **On screen:** the view model drives each image. The view reports that a tile appeared, and renders a placeholder, the image, or a "failed" icon.
 - **Config used:** the cache limits, set in the composition root.

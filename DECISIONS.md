@@ -391,12 +391,14 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
   - **Lookup:** memory (about 100 images), then disk (`Caches`, about 50 MB, oldest removed first, no expiry), then network. Two requests for the same image share one download.
   - **Launch preload:** persisted images are loaded into memory in the background, without delaying Home.
   - **Writing to disk:** each image is written shortly after download, and anything pending is flushed when the app goes to the background.
+  - **Background task:** that flush is wrapped in `UIApplication.beginBackgroundTask` / `endBackgroundTask`, ended when the flush completes or when iOS says time is up.
   - **Background notification:** the provider listens for it privately, so the single public function stays the only one.
   - **`URLSession` cache off:** the session's `URLCache` is turned off, so images are cached in one place.
 - **Why:**
   - Images are the heaviest thing the app loads, and they rarely change.
   - Persisting means a relaunch shows images at once, without asking the backend.
   - **Why not save on exit:** iOS often terminates suspended apps without calling any exit callback, so a cache written only on exit would usually be lost. Writing soon after download, and flushing when the app is backgrounded, covers that.
+  - **Why a background task:** without one, iOS may suspend the app as soon as it's backgrounded, part-way through the flush. The task asks for the few seconds the writes need, and always ends, so the app isn't killed for holding it too long.
 - **Trade-offs:**
   - With no expiry, a product whose image changes upstream keeps the old one until it's evicted or iOS purges the Caches folder.
   - An image downloaded just before a crash may not be on disk.
@@ -500,6 +502,17 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
   - A run script with `PlistBuddy`: sandboxing has to be off, and the ordering against Info.plist processing is fragile.
 - **Trade-off:** the comment-wrapped `#if` is unusual. A note in the file and in the blueprint says why it is there. Xcode's plist editor shows the ATS keys in both configurations, because it doesn't run the preprocessor.
 - **Blueprint:** §7.1, §7.7
+
+### D-043 — An app hosting unit tests builds nothing
+- **Decision:** `AppBootstrapper.configure()` returns `.hostingTests` when the process environment has `XCTestConfigurationFilePath`, and the scene shows an empty view controller. No configuration, dependencies or coordinator are built.
+- **Why:**
+  - `ANSRTests` runs inside the app (it needs the app as its host to import it). Without this, every test run would launch the live Home, call the backend and touch the image cache: the rule is that tests never hit the real network.
+  - Tests that need the app's types build them directly with test doubles, so the host has nothing to provide.
+- **Alternatives considered:**
+  - A scheme environment variable: one more setting to keep in both schemes, and a fresh scheme would miss it.
+  - Hostless tests: an app target's code can't be linked into a test bundle without a host.
+- **Trade-off:** one check of a test-only marker lives in app code. It is in the bootstrapper, has its own test, and builds less rather than more.
+- **Blueprint:** §7.7, §9.2
 
 ---
 
