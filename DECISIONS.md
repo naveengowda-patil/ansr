@@ -36,7 +36,8 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
 - **Why:**
   - "Picked by the business" means curated, not computed.
   - The fill keeps Home full when picked products disappear upstream.
-- **Blueprint:** §2 AC-1, §5.5
+- **The example ids** in `.env.example` are `12,11,3,18,5`: the five highest-rated products in Fake Store (by rate, then review count), picked for the demo so "Top rated" looks right. The list stays a business choice; nothing computes it. The earlier example `1,5,9,13,17` included a 2.9-star product.
+- **Blueprint:** §2 AC-1, §5.5, §5.10
 
 ### D-003 — Ranking tie-break
 - **Decision:** `rating.rate` descending, then `rating.count` descending, then `id` ascending.

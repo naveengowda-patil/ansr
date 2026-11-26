@@ -218,8 +218,9 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 - **How it works:**
   - The title is the category name, capitalised.
   - "Top rated" shows the 3 best in a horizontal row. "More in {Category}" shows the rest as a 2-column grid, and is hidden when there's nothing more.
-  - A category that no longer exists shows the empty state.
-- **Tests:** `CategoryViewModel`. It checks top rated then the rest, the hidden empty section, 404 → empty, and the tile tap.
+  - A category that no longer exists shows the empty state. Any other failure shows the error with Retry.
+  - Like Home, coming back from a product doesn't reload it.
+- **Tests:** `CategoryViewModel`. It checks top rated then the rest, the hidden empty section, 404 → empty, errors and Retry, a second load being ignored, and the tile tap.
 - **Rules:** [§7.8.2](BLUEPRINT.md#782-category)
 
 ### Search results

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.21, backend implemented, iOS foundation and Home built (phase 2.1) |
+| Status | v0.22, backend implemented, iOS Home and Category built (phase 2.2) |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -396,7 +396,7 @@ Every variable is one of three kinds:
 | `IMAGE_CACHE_MAX_ENTRIES` | Default | `100` | Bounded image cache |
 | `IMAGE_MAX_BYTES` | Default | `5242880` | 5 MB |
 | `IMAGE_CLIENT_MAX_AGE_SECONDS` | Default | `86400` | `Cache-Control` on image responses |
-| `FEATURED_PRODUCT_IDS` | **Required** | `1,5,9,13,17` | Ordered, comma-separated positive integers. Must be set; may be empty (Home is then filled by rating). |
+| `FEATURED_PRODUCT_IDS` | **Required** | `12,11,3,18,5` | Ordered, comma-separated positive integers. Must be set; may be empty (Home is then filled by rating). The example is the five highest-rated products in Fake Store, picked for the demo; the list stays a business choice (D-002). |
 | `SMTP_HOST` | **Required** | `mailpit` | `localhost` when running the API outside Docker |
 | `SMTP_PORT` | **Required** | `1025` | |
 | `SMTP_SECURE` | Default | `false` | `true` \| `false`. `false` for Mailpit and for SES on port 587 (STARTTLS); `true` for SES on port 465 (§5.8) |
@@ -590,7 +590,7 @@ iOS/ANSR/
 │   ├── Info.plist               # API_BASE_URL, REQUEST_TIMEOUT_SECONDS, scene manifest (excluded from resources)
 │   ├── App/                     # AppDelegate (@main), SceneDelegate, AppBootstrapper, AppConfiguration,
 │   │                            # AppDependencies, ConfigurationErrorView
-│   ├── Navigation/              # AppCoordinator, CoordinatorView, Route, Sheet, the five *Navigating protocols (Navigating.swift)
+│   ├── Navigation/              # AppCoordinator, CoordinatorView, Route, Sheet, Screen, the five *Navigating protocols (Navigating.swift)
 │   ├── Networking/              # NetworkClient, URLSessionNetworkClient, Endpoint, Endpoints, APIError, ErrorEnvelope
 │   ├── Models/                  # API data models: Product, Rating, CategoryProducts, ProductPage, ProductQuery,
 │   │                            # EnquiryRequest, EnquiryResponse, ItemsResponse
@@ -599,8 +599,9 @@ iOS/ANSR/
 │   ├── Features/
 │   │   └── Home/  Category/  SearchResults/  ProductDetail/  Enquiry/
 │   │                            # per screen: View, ViewModel, ViewData + its pure mapping functions
-│   ├── Shared/                  # ViewState, StateContainerView, ProductTileView, ProductTileViewData,
-│   │                            # ProductImageState, ProductImageLoader, ErrorMessages, Formatters, Strings
+│   ├── Shared/                  # ViewState, StateContainerView, ProductTileView, ProductTileViewData, ProductTileRow,
+│   │                            # ProductTileGrid, ProductSearchField, ProductImageState, ProductImageLoader,
+│   │                            # ErrorMessages, Formatters, Strings
 │   ├── Theme/                   # AppTheme tokens + environment key
 │   └── Mocks/                   # AppDependencies.mock, mock repositories, MockImageProvider, MockData (#if DEBUG)
 └── ANSRTests/                   # Swift Testing suites; Support/ holds test doubles such as StubURLProtocol (§9.2)
@@ -660,6 +661,7 @@ View → ViewModel → repository protocol → Remote…Repository → NetworkCl
   - `makeEnquiry(productId:productTitle:)`
 
   Its one public view entry is `rootView()`, which `SceneDelegate` hosts.
+- **`screen(for: Route) -> Screen`** sits between a route and its view. It calls the private factory and returns a `Screen` value holding the built view model (`.category(CategoryViewModel)`, or `.placeholder(title:)` for a screen not built yet). `makeDestination(for:)` only turns a `Screen` into its view. `screen(for:)` is internal, so tests can check which screen a route builds and how it is wired, without inspecting SwiftUI view types.
 - **`CoordinatorView`** is the navigation shell that `rootView()` returns. It holds the `NavigationStack(path:)`, `.navigationDestination(for:)`, `.sheet(item:)` and the theme, and owns no state: the coordinator hands it the two bindings and closures that call its private factories.
 
 ```swift
@@ -765,6 +767,7 @@ protocol NetworkClient: Sendable {
 | `.upstream` | 502 `UPSTREAM_ERROR` |
 | `.server(status:)` | 500 `INTERNAL_ERROR`, or any other non-2xx or unknown envelope. The status and the envelope code must agree: a 404 whose body isn't the `NOT_FOUND` envelope is `.server(status: 404)`. |
 | `.offline` | `URLError` not connected or connection lost |
+| `.unreachable` | `URLError` cannot connect to host, cannot find host, or DNS lookup failed: the device is online but the server isn't answering |
 | `.timeout` | `URLError.timedOut` |
 | `.cancelled` | `URLError.cancelled` or `CancellationError`. The screen was left. Never shown, and view models ignore it. |
 | `.decoding` | The response body doesn't decode |
@@ -776,6 +779,7 @@ protocol NetworkClient: Sendable {
 |---|---|
 | `.offline` | "You're offline. Check your connection and try again." |
 | `.timeout` | "The server took too long to respond. Please try again." |
+| `.unreachable` | "Can't reach the server. Please try again later." |
 | `.upstream` | "We can't reach the catalogue right now. Please try again in a moment." |
 | `.validation` | "Please check your details and try again." |
 | `.notFound` | "This item is no longer available." This only shows where a screen doesn't treat 404 as empty (§7.8). |
@@ -891,13 +895,15 @@ protocol ImageProvider: Sendable {
 | **Product detail** | `.product(id:)` | `ProductDetailViewModel` | `product(id:)` → `ViewState<ProductDetailViewData>` | 404: "This product is no longer available." | Enquire → `showEnquiry` |
 | **Enquiry** (sheet) | `Sheet.enquiry` | `EnquiryViewModel` | `submit(EnquiryRequest)` | none: it's a form (§7.8.5) | submit; Done → `dismissSheet` |
 
-**Built so far (phase 2.1):** Home is real. Until each of the other screens lands, `makeDestination(for:)` and `makeSheet(for:)` show a `RoutePlaceholderView` that names what opened it ("Product 5", "Category jewelery", "Search: ring", "Enquiry for product 5"), so navigation can be checked at runtime. Each placeholder is replaced by its screen's factory (`makeCategory(name:)` and so on).
+**Built so far (phase 2.2):** Home and Category are real. Until each of the other screens lands, `makeDestination(for:)` and `makeSheet(for:)` show a `RoutePlaceholderView` that names what opened it ("Product 5", "Category jewelery", "Search: ring", "Enquiry for product 5"), so navigation can be checked at runtime. Each placeholder is replaced by its screen's factory (`makeCategory(name:)` and so on).
 
 Every screen except Enquiry uses the states and loading rules in §7.11. Any error other than the 404s above shows the error state with Retry.
 
 **The search field** is the same on Home and Search results:
 - It is always visible: `.searchable(text:placement: .navigationBarDrawer(displayMode: .always))`, with the prompt "Search products". The text lives in the view model.
 - It submits with `.onSubmit(of: .search)` and passes the trimmed text.
+- **No auto-capitalisation and no autocorrection** (`.textInputAutocapitalization(.never)`, `.autocorrectionDisabled()`), so "ring" stays "ring". The keyboard's "." shortcut (two spaces type a full stop) is a system keyboard setting that still applies with autocorrection off, so it is left alone: "ring" followed by two spaces is sent as `ring.`.
+- Home and Search results share it as one modifier, `productSearchField(text:onSubmit:)` in `Shared/`, so the rules can't drift between the two.
 - **Search is disabled while the trimmed text is empty:**
   - The keyboard's Search key is disabled while the field is empty, which is the system default.
   - The view model's `canSearch` is `false` for whitespace-only text, so a submit then does nothing: no navigation and no request.
@@ -920,10 +926,11 @@ Layout: D-035.
 
 #### 7.8.2 Category
 
-- **Title:** the category name, capitalised.
+- **Title:** the category name, capitalised. The navigation title comes from the route's name, so it shows while loading and on error too. The loaded view data's `title` and `moreTitle` come from the response's `category`, spelled as in the data.
 - **"Top rated":** `topRated` (up to 3), as a horizontal row of tiles, in API order (AC-2).
 - **"More in {Category}":** `rest`, as a 2-column grid, in API order. **The section is hidden when `rest` is empty.**
-- **404** shows the empty state "This category is no longer available."
+- **404** shows the empty state "This category is no longer available." So does a response with both lists empty.
+- Loading follows §7.11, like Home: coming back from a product doesn't reload.
 
 #### 7.8.3 Search results
 
@@ -1145,14 +1152,14 @@ The iOS tests cover only what proves AC-1…AC-5, plus the coordinator navigatio
 
 | Area | AC | How | Must cover |
 |---|---|---|---|
-| `URLSessionNetworkClient` + `Endpoints` | AC-3, and all calls | Stub `URLProtocol` | **Search sends only non-empty params:**<br>• `ProductQuery(q: " bag ")` gives `/products?q=bag`;<br>• `nil` fields and a blank or whitespace `q` are omitted.<br>**Errors map correctly:**<br>• 400 → `.validation`, 404 → `.notFound`, 502 → `.upstream`, 500 or an unknown body → `.server`;<br>• not connected → `.offline`, timed out → `.timeout`, a body that doesn't decode → `.decoding`. |
+| `URLSessionNetworkClient` + `Endpoints` | AC-3, and all calls | Stub `URLProtocol` | **Search sends only non-empty params:**<br>• `ProductQuery(q: " bag ")` gives `/products?q=bag`;<br>• `nil` fields and a blank or whitespace `q` are omitted.<br>**Errors map correctly:**<br>• 400 → `.validation`, 404 → `.notFound`, 502 → `.upstream`, 500 or an unknown body → `.server`;<br>• not connected → `.offline`, timed out → `.timeout`, a body that doesn't decode → `.decoding`;<br>• cannot connect to host, cannot find host, DNS lookup failed → `.unreachable`. |
 | `HomeViewModel` | AC-1 (plus the AC-2 and AC-3 entry points) | Mock product and category repositories, mock `ImageProvider`, recording `HomeNavigating` | • `loading` → `loaded` with the 5 featured products as tiles, in API order, with formatted price and rating;<br>• categories capitalised;<br>• either request failing → `error`, then `retry()` → `loading` → `loaded`;<br>• a tile tap → `showProduct(id:)`;<br>• a category tap → `showCategory(name:)` with the data's spelling;<br>• a submit → `showSearchResults(query:)` with trimmed text;<br>• a blank or whitespace submit → no navigation. |
-| `CategoryViewModel` | AC-2 | Mock category repository, recording `CategoryNavigating` | • `topRated` first, then `rest`, each in API order;<br>• no "More in" section when `rest` is empty;<br>• 404 → `empty` with "This category is no longer available.";<br>• a tile tap → `showProduct(id:)`. |
+| `CategoryViewModel` | AC-2 | Mock category repository, recording `CategoryNavigating` | • it loads `category(name)` for its name;<br>• `loading` → `loaded` with `topRated` first, then `rest`, each in API order;<br>• no "More in" section when `rest` is empty;<br>• 404 → `empty` with "This category is no longer available.";<br>• any other error → `error`, then `retry()` → `loading` → `loaded`;<br>• a second load while one is running is ignored;<br>• a tile tap → `showProduct(id:)`. |
 | `SearchResultsViewModel` | AC-3 | Mock product repository, recording `SearchResultsNavigating` | • the repository receives a `ProductQuery` with only `q` set to the term;<br>• exactly the returned products are shown, with the "{n} results for '{q}'" summary;<br>• 0 results → `empty` with "No products match '{q}'.";<br>• a new submit → `showSearchResults(query:)`, and a blank one is ignored. |
 | `ProductDetailViewModel` | AC-4 | Mock product repository, recording `ProductDetailNavigating` | • it loads `product(id:)` for its id;<br>• it maps title, price, rating, category and description;<br>• 404 → `empty`;<br>• Enquire → `showEnquiry(productId:productTitle:)`. |
 | `EnquiryViewModel` | AC-5 | Mock enquiry repository (succeeds, fails or holds), recording `EnquiryNavigating` | **Valid:**<br>• `editing` → `submitting` → `submitted` with the thank-you text;<br>• the request has `productId` as an `Int` and trimmed fields.<br>**Invalid** (blank name, a line break in the name, a bad email, over a length limit):<br>• Submit is disabled and no request is made.<br>**Failure:**<br>• `failed(message)`, every field kept, Submit enabled again.<br>**Done** → `dismissSheet()`. |
 | `AppBootstrapper` | All (no network in tests) | The real bootstrapper with a given info dictionary and environment | • the test process carries `XCTestConfigurationFilePath`;<br>• with it set, `configure()` returns `.hostingTests` and builds nothing;<br>• an invalid `API_BASE_URL` gives `.configurationError` naming the key. |
-| `AppCoordinator` | Navigation for AC-1…AC-5 | The real coordinator with `AppDependencies.mock` | • `showProduct`, `showCategory` and `showSearchResults` push the right `Route`;<br>• two searches push two screens;<br>• the path binding shortening the path pops;<br>• `showEnquiry` presents the sheet, and `dismissSheet` clears it. |
+| `AppCoordinator` | Navigation for AC-1…AC-5 | The real coordinator with `AppDependencies.mock` | • `showProduct`, `showCategory` and `showSearchResults` push the right `Route`;<br>• `screen(for: .category(name:))` builds the Category screen for that name, with the coordinator as its navigator;<br>• two searches push two screens;<br>• the path binding shortening the path pops;<br>• `showEnquiry` presents the sheet, and `dismissSheet` clears it. |
 
 **Manual walkthrough before the iOS PR:** walk through AC-1…AC-5 by hand on **both schemes** (D-040).
 - **`ANSR Debug`:** against the local backend from §8.2, with the enquiry email visible in Mailpit.
@@ -1249,3 +1256,4 @@ None open.
 | 0.19 | 2026-11-26 | iOS phase 1, the foundation. §7.1 says how `Info.plist` is wired (its own file merged with the generated one, the scene manifest naming `SceneDelegate`, the ATS local-networking exception in Debug only through Info.plist preprocessing, D-042) and how xcconfig URLs are written (`http:/$()/…`). Details settled while building: `CoordinatorView` (§7.4); per-segment path encoding, query encoding of `+&=?#/`, the encodable body and the status-and-code rule (§7.5); `ProductImageState`, `ImageProviderError.undecodableImage`, the 2 s write delay and the cancellable background subscription (§7.6); the configuration error names the bad key (§7.7, §7.11); `ProductTileViewData` lives in `Shared/` (§7.2, §7.3); the phase 1 placeholder Home (§7.8). |
 | 0.20 | 2026-11-26 | §7.1: iPhone only is now explicit (`TARGETED_DEVICE_FAMILY = 1` on both targets). The project had iPhone and iPad set, which contradicted §7.1; the project now matches. |
 | 0.21 | 2026-11-26 | iOS phase 2.1, Home. §7.4: the path and sheet bindings are internal for tests and can only pop or dismiss; the path binding was checked at runtime and needed no fix. §7.6: the background flush runs inside a `UIApplication` background task, which ends on completion or expiry; tiles report appearance from `.task`, and a cancelled image request is retried on the next appearance. §7.7: `.hostingTests`, so a test run builds nothing and never calls the backend (D-043); `live(_:)` is `@MainActor`. §7.8: route placeholders name the route. §9.2: `AppBootstrapper` tests, and holds catch only the next call. D-034 updated. |
+| 0.22 | 2026-11-26 | iOS phase 2.2, Category, plus fixes from testing Home. §7.8.2: the navigation title comes from the route's name, both lists empty → the empty state, no reload on coming back. §7.4: `screen(for:)` returns a `Screen` with the built view model, so tests can check what a route builds. §7.5: `.unreachable` for cannot connect, cannot find host and DNS failure, with its own message. §7.8: the search field has no auto-capitalisation or autocorrection, shared as `productSearchField`. §7.2: `Screen`, `ProductTileRow`, `ProductTileGrid`, `ProductSearchField`. §5.10: the `FEATURED_PRODUCT_IDS` example is now `12,11,3,18,5`, the five highest-rated products (D-002). §9.2 updated. |
