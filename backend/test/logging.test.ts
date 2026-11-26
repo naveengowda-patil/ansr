@@ -7,8 +7,9 @@ import { imageResponse, productsFixture } from './support/fakeStore.js';
 
 /**
  * Debug log events end to end (blueprint §5.11): the real container, logger, caches,
- * repository, engine and email service, with only fetch, the mail transport and the
- * log destination replaced. Nothing touches the network.
+ * repository, engine and email service, with only fetch, the mail transport, the log
+ * destination and the clock replaced. Nothing touches the network and nothing sleeps:
+ * time moves with a fake clock and background refreshes are awaited with whenIdle().
  */
 
 const DEBUG_EVENTS = [
@@ -29,6 +30,7 @@ const secrets = { SMTP_USER: 'smtp-user-XYZ', SMTP_PASS: 'smtp-pass-XYZ' };
 /** Drives a typical session and returns every JSON line the app wrote. */
 async function runSession(logLevel: string): Promise<Record<string, unknown>[]> {
   const lines: string[] = [];
+  let time = 0;
   const transport: ClosableMailTransport = { sendMail: vi.fn(async () => ({})), close: vi.fn() };
   const config = loadConfig({
     PRODUCT_API_BASE_URL: 'https://fakestoreapi.com',
@@ -38,8 +40,6 @@ async function runSession(logLevel: string): Promise<Record<string, unknown>[]> 
     SMTP_PORT: '1025',
     MAIL_FROM: 'catalogue@example.com',
     SALES_INBOX_EMAIL: 'sales@example.com',
-    // A 1 s TTL lets the session reach a stale copy without fake timers.
-    PRODUCT_CACHE_TTL_SECONDS: '1',
     LOG_LEVEL: logLevel,
     ...secrets,
   });
@@ -47,6 +47,7 @@ async function runSession(logLevel: string): Promise<Record<string, unknown>[]> 
     fetch: async (url) => (url.pathname === '/products' ? Response.json(productsFixture) : imageResponse('image/png')),
     createMailTransport: () => transport,
     writeLog: (line) => lines.push(line),
+    now: () => time,
   });
   const app = createApp(container.deps);
 
@@ -54,9 +55,9 @@ async function runSession(logLevel: string): Promise<Record<string, unknown>[]> 
   await request(app).get('/products').query({ q: 'jacket' }).expect(200); // cache.hit + search.executed
   await request(app).get('/products/1/image').expect(200); // image.fetched
   await request(app).post('/enquiries').send(customer).expect(200); // email.sending + email.sent
-  await new Promise((resolve) => setTimeout(resolve, 1_050));
+  time += config.productApi.cacheTtlSeconds * 1000; // move past the TTL instead of sleeping
   await request(app).get('/categories').expect(200); // cache.stale (background refresh starts)
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await container.whenIdle(); // instead of waiting for the background refresh
 
   container.close();
   return lines.map((line) => JSON.parse(line) as Record<string, unknown>);

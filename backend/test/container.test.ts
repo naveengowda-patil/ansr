@@ -131,3 +131,79 @@ describe('config.loaded (§5.11)', () => {
     expect(linesFor('info')).toEqual([]);
   });
 });
+
+describe('test seams: now and whenIdle (§5.3)', () => {
+  it('uses the injected clock for cache ages, and whenIdle() waits for background refreshes', async () => {
+    let time = 0;
+    let fetches = 0;
+    const lines: string[] = [];
+    const held: { release: () => void } = { release: () => {} };
+    const container = createContainer(loadConfig({ ...env, LOG_LEVEL: 'debug' }), {
+      now: () => time,
+      createMailTransport: () => ({ sendMail: vi.fn(), close: vi.fn() }),
+      writeLog: (line) => lines.push(line),
+      fetch: async () => {
+        fetches += 1;
+        if (fetches === 2) await new Promise<void>((resolve) => (held.release = resolve));
+        return Response.json([]);
+      },
+    });
+    const { productRepository } = container.deps;
+
+    await productRepository.getAll();
+    time += config.productApi.cacheTtlSeconds * 1000;
+    await productRepository.getAll(); // stale: served at once, background refresh held open
+
+    const order: string[] = [];
+    const whenIdle = container.whenIdle().then(() => order.push('idle'));
+    for (let i = 0; i < 50; i += 1) await Promise.resolve(); // drain microtasks; no timers
+    order.push('release');
+    held.release();
+    await whenIdle;
+
+    expect(order).toEqual(['release', 'idle']); // whenIdle waited for the catalogue refresh
+    expect(fetches).toBe(2);
+
+    const stale = lines.map((line) => JSON.parse(line) as Record<string, unknown>).find((l) => l.msg === 'cache.stale');
+    expect(stale).toMatchObject({ cache: 'catalogue', ageMs: config.productApi.cacheTtlSeconds * 1000 });
+    container.close();
+  });
+});
+
+describe('the injected clock reaches every component that measures time (§5.3)', () => {
+  it('is used by the repository, the email service and the products route', async () => {
+    let time = 0;
+    const now = () => time;
+    const lines: string[] = [];
+    const container = createContainer(loadConfig({ ...env, LOG_LEVEL: 'debug' }), {
+      now,
+      writeLog: (line) => lines.push(line),
+      fetch: async () => {
+        time += 25;
+        return Response.json([]);
+      },
+      createMailTransport: () => ({
+        sendMail: async () => {
+          time += 40;
+          return {};
+        },
+        close: vi.fn(),
+      }),
+    });
+
+    await container.deps.productRepository.getAll();
+    await container.deps.emailService.send({
+      to: 'sales@example.com',
+      from: 'catalogue@example.com',
+      replyTo: { name: 'A', address: 'a@example.com' },
+      subject: 's',
+      text: 't',
+    });
+    container.close();
+
+    const events = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events.find((e) => e.msg === 'upstream.request')).toMatchObject({ durationMs: 25 });
+    expect(events.find((e) => e.msg === 'email.sent')).toMatchObject({ durationMs: 40 });
+    expect(container.deps.now).toBe(now); // the products route's clock (search.executed)
+  });
+});

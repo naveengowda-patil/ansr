@@ -18,6 +18,8 @@ export interface Container {
   readonly deps: AppDeps;
   /** Releases resources (SMTP connections) on shutdown. */
   close(): void;
+  /** Resolves when the catalogue and image caches have no background refresh in flight. */
+  whenIdle(): Promise<void>;
 }
 
 /** Options handed to the SMTP transport factory (blueprint §5.8). */
@@ -45,6 +47,8 @@ export interface ContainerOverrides {
   readonly fetch?: FetchFn;
   /** Where JSON log lines go. Defaults to stdout. */
   readonly writeLog?: (line: string) => void;
+  /** Clock for cache ages and debug durations. Defaults to performance.now(). Tests pass a fake. */
+  readonly now?: Clock;
 }
 
 /**
@@ -71,13 +75,26 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
   );
   logger.debug('config.loaded', safeConfigSummary(config));
   // One monotonic clock for cache ages and debug durations (§5.11).
-  const now: Clock = () => performance.now();
+  const now: Clock = overrides.now ?? (() => performance.now());
   const cacheTiming = {
     ttlMs: config.productApi.cacheTtlSeconds * 1000,
     maxStaleAgeMs: config.productApi.staleMaxAgeSeconds * 1000,
     retryBackoffMs: config.productApi.retryBackoffSeconds * 1000,
     now,
   };
+
+  const catalogueCache = new TtlCache<'catalogue', CatalogueSnapshot>({
+    ...cacheTiming,
+    name: 'catalogue',
+    logger,
+    maxEntries: 1,
+  });
+  const imageCache = new TtlCache<number, ProductImage>({
+    ...cacheTiming,
+    name: 'image',
+    logger,
+    maxEntries: config.images.cacheMaxEntries,
+  });
 
   const productRepository = new FakeStoreProductRepository({
     fetch: overrides.fetch ?? ((url, init) => fetch(url, init)),
@@ -86,18 +103,8 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
     imageHostAllowlist: config.images.hostAllowlist,
     imageTimeoutMs: config.images.timeoutMs,
     imageMaxBytes: config.images.maxBytes,
-    catalogueCache: new TtlCache<'catalogue', CatalogueSnapshot>({
-      ...cacheTiming,
-      name: 'catalogue',
-      logger,
-      maxEntries: 1,
-    }),
-    imageCache: new TtlCache<number, ProductImage>({
-      ...cacheTiming,
-      name: 'image',
-      logger,
-      maxEntries: config.images.cacheMaxEntries,
-    }),
+    catalogueCache,
+    imageCache,
     logger,
     now,
   });
@@ -124,5 +131,8 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
       },
     },
     close: () => transport.close(),
+    whenIdle: async () => {
+      await Promise.all([catalogueCache.whenIdle(), imageCache.whenIdle()]);
+    },
   };
 }
