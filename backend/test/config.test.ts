@@ -83,4 +83,20 @@ describe('loadConfig (§5.10)', () => {
     expect(() => loadConfig({ ...required, ...overrides })).toThrow(ConfigError);
     expect(() => loadConfig({ ...required, ...overrides })).toThrow(variable);
   });
+
+  it('reports every invalid variable in one ConfigError, not just the first', () => {
+    const broken = { ...required, SALES_INBOX_EMAIL: 'not-an-email', PRODUCT_API_TIMEOUT_MS: 'soon' };
+
+    let error: unknown;
+    try {
+      loadConfig(broken);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ConfigError);
+    const message = (error as ConfigError).message;
+    expect(message).toContain('SALES_INBOX_EMAIL');
+    expect(message).toContain('PRODUCT_API_TIMEOUT_MS');
+  });
 });
