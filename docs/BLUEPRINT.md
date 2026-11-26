@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.11, backend implemented |
+| Status | v0.12, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -141,6 +141,12 @@ backend/
 - Environment variables are read only in `src/config.ts`. Everything else receives config as arguments.
 - `src/app.ts` exports `createApp(deps)` and is kept separate from `src/server.ts` so tests can run the app without a port.
 - All errors go through one error middleware (§5.9).
+- `createContainer(config, overrides?)` is the composition root. Its **test seams** (production uses the defaults) are:
+  - `createMailTransport`: default `nodemailer.createTransport`;
+  - `fetch`: default the global `fetch`;
+  - `writeLog`: default stdout;
+  - `now`: the `Clock` for cache ages and debug durations, default `performance.now()`. The container passes it everywhere it passes the clock: both caches, the repository, the email service and the products route (`AppDeps.now`).
+  - `Container.whenIdle()` resolves once the catalogue and image caches have no background refresh in flight (`TtlCache.whenIdle()`), so tests await it instead of sleeping.
 
 `createApp` dependencies:
 
@@ -732,6 +738,8 @@ The root `README.md` (written in the backend PR, completed in the iOS PR) covers
 
 Tests never hit the real network. They test behaviour through public interfaces, and each must be shown to fail when the behaviour breaks.
 
+Tests never sleep. Time moves through an injected fake clock, and background work is awaited with `whenIdle()`.
+
 ### 9.1 Backend (Vitest)
 
 | Area | How | Must cover |
@@ -741,7 +749,7 @@ Tests never hit the real network. They test behaviour through public interfaces,
 | Search plug-and-play | Supertest + mock `Logger` | The **default `InMemorySearchEngine` (text search only)**: `category`, `minPrice`, `maxPrice`, `minRating` and each non-relevance sort → 400 naming it, with a warning logged (`param`, `value`, engine name); `q`, `sort=relevance` and paging work. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. With `allCapabilities()`, the real engine serves `category` + sort through the route. |
 | `InMemorySearchEngine` | Unit | default = `textSearchOnly()`; with `allCapabilities()`: each filter and sort (additional, not enabled in the running app), category filter case-insensitive, combined filters; paging and total; relevance = upstream order; searches the latest snapshot after re-indexing |
 | Categories route | Supertest | `/categories/JEWELERY` matches and returns `jewelery` as the data spells it; unknown → 404 |
-| Debug log events (§5.11) | Recording logger per component; end-to-end through `createContainer` with injected `fetch`, mail transport and log writer | each event is logged with the expected context; with `LOG_LEVEL=info` none of them is written; `config.loaded` never contains `SMTP_USER`, `SMTP_PASS` or an email address; `email.sending` / `email.sent` never contain the customer's name, email or message |
+| Debug log events (§5.11) | Recording logger per component; end-to-end through `createContainer` with injected `fetch`, mail transport, log writer and a **fake clock** (`now`). Time is moved past the TTL and background refreshes are awaited with `container.whenIdle()`; no sleeps. | each event is logged with the expected context; with `LOG_LEVEL=info` none of them is written; `config.loaded` never contains `SMTP_USER`, `SMTP_PASS` or an email address; `email.sending` / `email.sent` never contain the customer's name, email or message |
 | `container.ts` | Unit (no network) | the running app's search engine is `textSearchOnly()`; settings flow from config; the SMTP transport receives `connectionTimeout`, `greetingTimeout` and `socketTimeout` = `SMTP_TIMEOUT_MS` |
 | Enquiry route (email) | Supertest | send fails (502): logs contain no customer name, email or message; tab, `\u0000` and `\u007F` in `name` and in `email` → 400; `productId` `7.5`, `0`, `-1` (and `"7"`) → 400 |
 | `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Stale-while-revalidate, catalogue and image:**<br>• an expired copy is returned without waiting for upstream (the upstream response is held back until after the assertion);<br>• exactly one background refresh for concurrent requests;<br>• a successful refresh replaces the copy;<br>• a failed refresh keeps serving the old copy and logs once;<br>• back-off is respected (no refresh inside the window, one after it);<br>• past the 24 h cap the request waits and gets `UpstreamError`;<br>• no copy + failure → `UpstreamError`.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
@@ -834,3 +842,4 @@ None open.
 | 0.9 | 2026-11-25 | §12 Future: cursor-based paging added next to Tuist. Docs only. |
 | 0.10 | 2026-11-25 | Enquiry flow review. `SMTP_TIMEOUT_MS` (default 10000) is applied to the connection, greeting and socket timeouts, and a hung send → 502. The transport is built via `smtpTransportOptions(config)` and an injectable factory. Precise SES settings (587 + `SMTP_SECURE=false` with STARTTLS, or 465 + `SMTP_SECURE=true`). `productId` must be a positive integer JSON number (§6.9, §7.5). Tests added for no customer data in failure logs, control characters, productId shapes and the SMTP timeout. |
 | 0.11 | 2026-11-26 | Logger review. New §5.11 "Log events" lists every event, its level and its context. Debug events added: `config.loaded` (safe allowlisted summary), `cache.hit` / `cache.miss` / `cache.stale`, `upstream.request`, `image.fetched`, `search.executed`, `email.sending` / `email.sent`. `TtlCache` receives `name` + `Logger`; the repository, `SmtpEmailService` and the products route receive an injected `Clock` (`ports/Clock.ts`, `AppDeps.now`). Rules: debug only, no customer data or secrets, durations from the injected clock. |
+| 0.12 | 2026-11-26 | Container test seams documented in §5.3: `now` override (default `performance.now()`) and `Container.whenIdle()`. §9 states that tests never sleep. The end-to-end logging test uses a fake clock and `whenIdle()` instead of real sleeps. |
