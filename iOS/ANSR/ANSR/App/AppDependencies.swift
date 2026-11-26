@@ -1,4 +1,4 @@
-import Foundation
+import UIKit
 
 /// Everything screens may use, as protocols only (BLUEPRINT §7.7). The coordinator passes each view model just what it needs.
 struct AppDependencies: Sendable {
@@ -12,6 +12,7 @@ struct AppDependencies: Sendable {
 
 extension AppDependencies {
     /// The composition root: the only place concrete types are created.
+    @MainActor
     static func live(_ configuration: AppConfiguration) -> AppDependencies {
         let sessionConfiguration = URLSessionConfiguration.default
         sessionConfiguration.timeoutIntervalForRequest = configuration.requestTimeout
@@ -27,6 +28,7 @@ extension AppDependencies {
             client: client,
             directory: URL.cachesDirectory.appending(path: "ProductImages", directoryHint: .isDirectory),
             notificationCenter: .default,
+            application: .shared,
             limits: HybridImageProvider.Limits(
                 memoryCountLimit: 100,
                 diskByteLimit: 50 * 1024 * 1024,

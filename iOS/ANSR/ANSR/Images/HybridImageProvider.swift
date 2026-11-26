@@ -5,7 +5,8 @@ import UIKit
 /// - Memory: an `NSCache` of about `memoryCountLimit` images.
 /// - Disk: one file per product id in `directory`, capped at about `diskByteLimit`, oldest removed first, no expiry.
 /// - Network: `Endpoints.productImage(id:)` through `NetworkClient.data(for:)`; one download per id at a time.
-/// - Persisting: downloads are written to disk `diskWriteDelay` later, batched, and flushed when the app goes to the background.
+/// - Persisting: downloads are written to disk `diskWriteDelay` later, batched, and flushed when the app goes to the background,
+///   inside a `UIApplication` background task so iOS lets the flush finish before suspending the app.
 /// - At launch, persisted images are loaded into memory in the background, newest first.
 ///
 /// `image(forProductId:)` is its only public function. Disk problems are never fatal: a failed read is a miss, a failed write is dropped.
@@ -20,17 +21,25 @@ actor HybridImageProvider: ImageProvider {
     private let directory: URL
     private let limits: Limits
     private let notificationCenter: NotificationCenter
+    private let application: UIApplication
     private let memory = NSCache<NSNumber, UIImage>()
     private var inFlight: [Int: Task<UIImage, any Error>] = [:]
     private var pendingWrites: [Int: Data] = [:]
     private var scheduledFlush: Task<Void, Never>?
     private var backgroundFlushes: Task<Void, Never>?
 
-    init(client: any NetworkClient, directory: URL, notificationCenter: NotificationCenter, limits: Limits) {
+    init(
+        client: any NetworkClient,
+        directory: URL,
+        notificationCenter: NotificationCenter,
+        application: UIApplication,
+        limits: Limits
+    ) {
         self.client = client
         self.directory = directory
         self.limits = limits
         self.notificationCenter = notificationCenter
+        self.application = application
         memory.countLimit = limits.memoryCountLimit
         Task(priority: .utility) { [weak self] in
             await self?.start()
@@ -77,7 +86,7 @@ actor HybridImageProvider: ImageProvider {
         let notifications = notificationCenter.notifications(named: UIApplication.didEnterBackgroundNotification)
         backgroundFlushes = Task.detached { [weak self] in
             for await _ in notifications {
-                await self?.flush()
+                await self?.flushBeforeSuspension()
             }
         }
         await warmUp()
@@ -117,6 +126,14 @@ actor HybridImageProvider: ImageProvider {
         let writes = pendingWrites.map { (url: fileURL(for: $0.key), data: $0.value) }
         pendingWrites.removeAll()
         await Self.write(writes, into: directory, byteLimit: limits.diskByteLimit)
+    }
+
+    /// Flushes pending writes inside a background task, so iOS gives the flush time to finish before suspending.
+    /// The task ends when the flush completes, or earlier if iOS says time is up.
+    private func flushBeforeSuspension() async {
+        let backgroundTask = await BackgroundTask.begin(in: application, name: "ProductImages.flush")
+        await flush()
+        await backgroundTask.end()
     }
 
     private func fileURL(for id: Int) -> URL {
@@ -174,5 +191,31 @@ actor HybridImageProvider: ImageProvider {
                 total -= oldest.size
             }
         }
+    }
+}
+
+/// One `UIApplication` background task. `end()` is safe to call twice: once when the work finishes,
+/// and once from the expiration handler if iOS runs out of time first.
+@MainActor
+private final class BackgroundTask {
+    private let application: UIApplication
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    private init(application: UIApplication) {
+        self.application = application
+    }
+
+    static func begin(in application: UIApplication, name: String) -> BackgroundTask {
+        let task = BackgroundTask(application: application)
+        task.identifier = application.beginBackgroundTask(withName: name) { [weak task] in
+            task?.end()
+        }
+        return task
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        application.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
