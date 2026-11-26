@@ -2,9 +2,13 @@
 
 A proof of concept for a product catalogue: a SwiftUI iOS app and a Node.js + TypeScript (Express) backend. The app only talks to our backend. The backend reads products from [Fake Store](https://fakestoreapi.com) (images included) and sends enquiry emails, which Mailpit catches locally.
 
-- **What is built, and how:** [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md), the single source of truth
-- **Why:** [`DECISIONS.md`](DECISIONS.md)
-- **How AI was used:** [`AI_USAGE.md`](AI_USAGE.md)
+## Docs
+
+- [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md): the single source of truth for what is built (requirements, architecture, API contract, config, tests)
+- [`docs/BACKEND_ARCHITECTURE.md`](docs/BACKEND_ARCHITECTURE.md): a guide to the backend, part by part, linking to the blueprint
+- [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md): a quick reference for API callers
+- [`DECISIONS.md`](DECISIONS.md): why things are the way they are
+- [`AI_USAGE.md`](AI_USAGE.md): how AI was used, the key prompts, and what it got wrong
 
 ## Prerequisites
 
