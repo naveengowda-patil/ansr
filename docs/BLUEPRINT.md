@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.14, backend implemented |
+| Status | v0.15, backend implemented |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -37,9 +37,9 @@ This is the single source of truth for **what** to build. Every change starts he
 
 ## 3. Constraints
 
-- **Under 10 minutes to run locally** for someone new: backend with `docker compose up`, app on the iOS Simulator against the local backend (§8).
+- **Under 10 minutes to run locally** for someone new: backend with one command, `docker compose up --build`, from a fresh clone, app on the iOS Simulator against the local backend (§8).
 - **No paid services or accounts.** Emails are caught locally by Mailpit.
-- **No secrets in the repo.** Config via `.env.example` → `.env` (git-ignored).
+- **No secrets in the repo.** Config comes from `.env.example`, which holds safe local defaults and is used directly. An optional `.env` (git-ignored) overrides it.
 - **AWS friendly** infra: containerised, stateless, config from env, logs to stdout, health endpoint (§8.3).
 - **The iOS app only talks to our backend.** It never calls `fakestoreapi.com`, not even for images.
 - **Tests cover the critical path** (§9) so the code can be changed with confidence.
@@ -374,7 +374,7 @@ The single error middleware maps `AppError` subclasses to the table, maps anythi
 
 ### 5.10 Configuration
 
-Read and validated only in `src/config.ts`. The app fails fast at startup on invalid config and lists every problem. All variables are in the root `.env.example` with safe local values.
+Read and validated only in `src/config.ts`. The app fails fast at startup on invalid config and lists every problem. All variables are in the root `.env.example` with safe local values. Docker Compose uses that file directly as the defaults, so it must stay free of secrets and always runnable as-is.
 
 Every variable is one of three kinds:
 - **Required:** environment-specific (URLs, hosts, addresses, ids). There is no default in code, so the app won't start without it.
@@ -695,24 +695,30 @@ Price display: formatted in the ViewModel with the product's `currency`.
 
 ### 8.1 Prerequisites
 
-- Docker with Compose v2 (Docker Desktop, OrbStack or Colima).
+- Docker with **Compose 2.24 or newer** (Docker Desktop, OrbStack or Colima), needed for the optional `env_file` used below.
 - **Xcode 16 or newer** (built with Xcode 26) and an iOS 18+ simulator.
 - Optional, for running backend tests outside Docker: Node.js 24 (`.nvmrc`).
 
 ### 8.2 Run (target: under 10 minutes)
 
+One command from a fresh clone, with nothing to copy:
+
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
 
+- **Configuration:**
+  - `.env.example` is loaded as the defaults.
+  - A `.env`, if present, is loaded after it, so any variable it sets wins (`env_file` with `required: false`, D-029).
+  - `.env` is optional and only for overrides, for example `PORT=3100` or `LOG_LEVEL=debug`.
+  - Compose also reads `.env` for `${PORT}` in the port mapping, so a `PORT` override changes the published port too.
 - API: http://localhost:3000 (`/health` to check)
 - Mailpit inbox UI: http://localhost:8025 (SMTP on 1025)
 
 Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug config already points at `http://localhost:3000`.
 
 `docker-compose.yml` services:
-- `api` — built from `backend/Dockerfile`, env from `.env`, port 3000, depends on `mailpit`, healthcheck on `/health`.
+- `api` — built from `backend/Dockerfile`, env from `.env.example` then the optional `.env`, port `${PORT:-3000}`, depends on `mailpit`, healthcheck on `/health`.
 - `mailpit` — `axllent/mailpit` (pinned tag), ports 8025 and 1025.
 
 ### 8.3 AWS readiness
@@ -731,11 +737,11 @@ Then open `ios/Catalogue.xcodeproj`, pick an iPhone simulator, Run. The Debug co
 The root `README.md` (written in the backend PR, completed in the iOS PR) covers:
 - What the project is, with links to this blueprint, `DECISIONS.md` and `AI_USAGE.md`.
 - **Prerequisites:**
-  - Docker with Compose v2.
+  - Docker with Compose 2.24 or newer.
   - **Xcode 16 or newer**, which is required for the iOS 18 deployment target and the synchronized-folder project format.
   - An iOS 18+ simulator.
   - Optionally Node.js 24, for backend tests outside Docker.
-- **Quick start:** the steps in §8.2, and where to see the enquiry email (Mailpit at http://localhost:8025).
+- **Quick start:** the one command in §8.2 (`.env` optional, for overrides only), and where to see the enquiry email (Mailpit at http://localhost:8025).
 - **Running tests:**
   - backend: `cd backend && npm ci && npm test` (Node 24), or with Docker only: `docker build --target test backend`
   - iOS: ⌘U in Xcode, or `xcodebuild test` with a simulator destination
@@ -855,3 +861,4 @@ None open.
 | 0.12 | 2026-11-26 | Container test seams documented in §5.3: `now` override (default `performance.now()`) and `Container.whenIdle()`. §9 states that tests never sleep. The end-to-end logging test uses a fake clock and `whenIdle()` instead of real sleeps. |
 | 0.13 | 2026-11-26 | Drift fixes (docs only): §5.2 test tree shows the sub-folders, the top-level test files and `test/support/fakeStore.ts`; §5.5 `buildEnquiryEmail` takes `receivedAt`; "Last updated" set to 2026-11-26. |
 | 0.14 | 2026-11-26 | §9.1: a config test proves that one `ConfigError` lists every invalid variable, not just the first. |
+| 0.15 | 2026-11-26 | One-command start: Compose loads `.env.example` as defaults and an optional `.env` for overrides, so `docker compose up --build` works from a fresh clone. Needs Compose 2.24+ (§3, §5.10, §8.1, §8.2, §8.4; D-029). |

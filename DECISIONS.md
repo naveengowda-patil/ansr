@@ -298,6 +298,19 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
 
 ---
 
+### D-029 — One-command start: `.env.example` is the Compose default, `.env` only overrides
+- **Decision:**
+  - `docker-compose.yml` loads `env_file: .env.example`, then `.env` with `required: false`.
+  - `docker compose up --build` works from a fresh clone with nothing to copy.
+  - A local `.env` overrides any variable.
+- **Why:**
+  - Before this, a reviewer had to run `cp .env.example .env` first, or Compose failed.
+  - One command is the smallest possible "run it locally" story.
+- **Trade-offs:**
+  - Needs Docker Compose 2.24 or newer for the optional `env_file` entry.
+  - `.env.example` is now runtime config, not just documentation, so it must stay secret-free and always runnable.
+- **Blueprint:** §3, §5.10, §8.1, §8.2
+
 ## Process
 
 ### D-015 — CLAUDE.md holds rules only; the blueprint holds everything project-specific
