@@ -67,6 +67,7 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
     - Swift Testing for unit tests, with no UI test target.
     - No third-party dependencies.
     - No development team: it runs on the simulator only.
+  - **`Info.plist`:** the app's own file is merged with the one Xcode generates. It carries the two settings and the scene manifest. The plain-HTTP exception is kept in Debug builds only, by preprocessing the file ([§7.1](BLUEPRINT.md#71-stack-and-project-setup), [D-042](../DECISIONS.md)).
   - **Configurations:**
     - **Debug** points at the local backend and allows plain HTTP to localhost.
     - **Prod** points at a placeholder HTTPS URL and allows HTTPS only.
@@ -161,9 +162,9 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
 **The map. One coordinator knows where the user is, opens each screen, and is the only one that builds screens.**
 
 - **Files:** `ANSR/Navigation/`
-  - `AppCoordinator.swift`
+  - `AppCoordinator.swift` and `CoordinatorView.swift` (the stack and sheet shell)
   - `Route.swift` and `Sheet.swift`
-  - the five navigator protocols
+  - the five navigator protocols, in `Navigating.swift`
 - **Public API:**
   - `AppCoordinator.rootView()`.
   - The navigator protocols:

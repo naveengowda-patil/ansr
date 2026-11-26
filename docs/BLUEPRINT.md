@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.18, backend implemented, iOS app designed |
+| Status | v0.19, backend implemented, iOS foundation built (phase 1) |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -556,8 +556,27 @@ Why this stack: D-025. Why these settings: D-039.
 | Dependencies | **None**: no Swift packages, no third-party code |
 | Tests | **Swift Testing** (`import Testing`). No XCTest, no UI or snapshot tests (§9.2). |
 | Tooling | Requires **Xcode 16 or newer**. Built and tested with Xcode 26. |
+| Build configurations | **Debug** and **Prod** (no Release), each based on its xcconfig in `Config/` (§7.7). |
 
 - Swift Concurrency only (`async`/`await`). No completion handlers, no Combine.
+- **xcconfig URLs** are written `http:/$()/localhost:3000`, because `//` starts a comment in an xcconfig. The empty `$()` disappears when the setting resolves, giving `http://localhost:3000`.
+
+**How `Info.plist` is wired** (D-042):
+
+| Setting | Value | Why |
+|---|---|---|
+| `INFOPLIST_FILE` | `ANSR/Info.plist` | The app's own keys live in one file. |
+| `GENERATE_INFOPLIST_FILE` | `YES` (kept) | Xcode still generates the standard keys (bundle, launch screen, orientations) and merges `ANSR/Info.plist` into them. |
+| `INFOPLIST_KEY_UIApplicationSceneManifest_Generation` | `NO` | The scene manifest comes from `ANSR/Info.plist`, so it can name `SceneDelegate`. |
+| Membership exception | `Info.plist` excluded from the `ANSR` target on the synchronized `ANSR/` folder | Otherwise the file would also be copied into the app as a resource. |
+| `INFOPLIST_PREPROCESS` | `YES` (both configurations) | Lets one file carry a Debug-only key (below). |
+| `INFOPLIST_PREPROCESSOR_DEFINITIONS` | `ANSR_ALLOW_LOCAL_NETWORKING=1` in the **Debug** target settings only | Prod never defines it, so Prod never gets the exception. It sits in the target's build settings rather than the xcconfig, which keep only the values §7.7 lists. |
+
+Keys in `ANSR/Info.plist`:
+- `API_BASE_URL = $(API_BASE_URL)` and `REQUEST_TIMEOUT_SECONDS = $(REQUEST_TIMEOUT_SECONDS)`, read only by `AppConfiguration` (§7.7).
+- `UIApplicationSceneManifest`: one scene, no multiple scenes, `UISceneDelegateClassName = $(PRODUCT_MODULE_NAME).SceneDelegate`.
+- `NSAppTransportSecurity` → `NSAllowsLocalNetworking = true`, wrapped in `#if ANSR_ALLOW_LOCAL_NETWORKING … #endif`. The `#if` lines sit inside XML comments, so the file on disk stays a valid plist (`plutil -lint` passes), and the preprocessor drops the block in Prod.
+- Check with `plutil -p <built app>/Info.plist`: the Debug app has `NSAppTransportSecurity`, and the Prod app has no `NSAppTransportSecurity` key at all.
 
 ### 7.2 Structure
 
@@ -571,7 +590,7 @@ iOS/ANSR/
 │   ├── Info.plist               # API_BASE_URL, REQUEST_TIMEOUT_SECONDS, scene manifest (excluded from resources)
 │   ├── App/                     # AppDelegate (@main), SceneDelegate, AppBootstrapper, AppConfiguration,
 │   │                            # AppDependencies, ConfigurationErrorView
-│   ├── Navigation/              # AppCoordinator, Route, Sheet, the five *Navigating protocols
+│   ├── Navigation/              # AppCoordinator, CoordinatorView, Route, Sheet, the five *Navigating protocols (Navigating.swift)
 │   ├── Networking/              # NetworkClient, URLSessionNetworkClient, Endpoint, Endpoints, APIError, ErrorEnvelope
 │   ├── Models/                  # API data models: Product, Rating, CategoryProducts, ProductPage, ProductQuery,
 │   │                            # EnquiryRequest, EnquiryResponse, ItemsResponse
@@ -580,11 +599,11 @@ iOS/ANSR/
 │   ├── Features/
 │   │   └── Home/  Category/  SearchResults/  ProductDetail/  Enquiry/
 │   │                            # per screen: View, ViewModel, ViewData + its pure mapping functions
-│   ├── Shared/                  # ViewState, StateContainerView, ProductTileView, ProductImageLoader,
-│   │                            # ErrorMessages, Formatters, Strings
+│   ├── Shared/                  # ViewState, StateContainerView, ProductTileView, ProductTileViewData,
+│   │                            # ProductImageState, ProductImageLoader, ErrorMessages, Formatters, Strings
 │   ├── Theme/                   # AppTheme tokens + environment key
-│   └── Mocks/                   # AppDependencies.mock + mock repositories for previews (#if DEBUG)
-└── ANSRTests/                   # Swift Testing suites + test doubles (§9.2)
+│   └── Mocks/                   # AppDependencies.mock, mock repositories, MockImageProvider, MockData (#if DEBUG)
+└── ANSRTests/                   # Swift Testing suites; Support/ holds test doubles such as StubURLProtocol (§9.2)
 ```
 
 ### 7.3 MVVM-C layering and models
@@ -611,7 +630,7 @@ View → ViewModel → repository protocol → Remote…Repository → NetworkCl
 | Layer | Types | Lives in | Rule |
 |---|---|---|---|
 | **Data models** | `Product`, `Rating`, `CategoryProducts`, `ProductPage`, `ProductQuery`, `EnquiryRequest`, `EnquiryResponse`, `ItemsResponse<Item>` | `Models/` | Match the API (§6) field for field. `Codable` as needed, `Sendable`, `Equatable`. No formatting. `price` is a `Decimal`. |
-| **View data** | One set per screen, e.g. `ProductTileViewData { id, title, priceText, ratingText }` | `Features/<Screen>/` | Exactly what the screen renders, already formatted as text. `Equatable`. |
+| **View data** | One set per screen, e.g. `ProductTileViewData { id, title, priceText, ratingText }` | `Features/<Screen>/`, except `ProductTileViewData`, which every tile shares, in `Shared/` | Exactly what the screen renders, already formatted as text. `Equatable`. |
 
 - **Mapping:** view models turn data models into view data with **pure functions** (model + `Locale` in, view data out), defined next to the view data.
 - **View data per screen:**
@@ -641,6 +660,7 @@ View → ViewModel → repository protocol → Remote…Repository → NetworkCl
   - `makeEnquiry(productId:productTitle:)`
 
   Its one public view entry is `rootView()`, which `SceneDelegate` hosts.
+- **`CoordinatorView`** is the navigation shell that `rootView()` returns. It holds the `NavigationStack(path:)`, `.navigationDestination(for:)`, `.sheet(item:)` and the theme, and owns no state: the coordinator hands it the two bindings and closures that call its private factories.
 
 ```swift
 enum Route: Hashable {
@@ -702,6 +722,8 @@ enum Sheet: Identifiable, Hashable {
   - Only `URLSessionNetworkClient` uses `URLSession`, `URLRequest` or `JSONDecoder` for network calls.
   - Requests are `Endpoint` values (method, path, query items, body), built in `Endpoints.swift`.
   - URLs are built with `URLComponents` and `URLQueryItem`, never by joining strings.
+  - Each path segment is percent-encoded on its own, so a `/` inside a category name can't split the path. Query values also encode `+`, `&`, `=`, `?`, `#` and `/`, so `c++` reaches the backend as `c++`, not `c  `.
+  - The JSON body is an `Encodable` value on the `Endpoint`, encoded by the client. `Accept: application/json` is sent for JSON requests only, not for image bytes.
 - **The session** is created once in the composition root (§7.7):
   - `timeoutIntervalForRequest` = `REQUEST_TIMEOUT_SECONDS`;
   - **`waitsForConnectivity = false`**, so offline fails fast as `.offline`;
@@ -739,7 +761,7 @@ protocol NetworkClient: Sendable {
 | `.validation(message:)` | 400 `VALIDATION_ERROR` |
 | `.notFound` | 404 `NOT_FOUND` |
 | `.upstream` | 502 `UPSTREAM_ERROR` |
-| `.server(status:)` | 500 `INTERNAL_ERROR`, or any other non-2xx or unknown envelope |
+| `.server(status:)` | 500 `INTERNAL_ERROR`, or any other non-2xx or unknown envelope. The status and the envelope code must agree: a 404 whose body isn't the `NOT_FOUND` envelope is `.server(status: 404)`. |
 | `.offline` | `URLError` not connected or connection lost |
 | `.timeout` | `URLError.timedOut` |
 | `.cancelled` | `URLError.cancelled` or `CancellationError`. The screen was left. Never shown, and view models ignore it. |
@@ -775,7 +797,7 @@ protocol ImageProvider: Sendable {
 - **Lookup:** memory → disk → network.
   - A disk hit is also put in memory.
   - A downloaded image goes to memory at once, and to disk shortly after (below).
-  - Network fetches use `Endpoints.productImage(id:)` through `NetworkClient.data(for:)`. Bytes that don't decode to an image throw.
+  - Network fetches use `Endpoints.productImage(id:)` through `NetworkClient.data(for:)`. Bytes that don't decode to an image throw `ImageProviderError.undecodableImage`.
 - **One download per image:** two requests for the same id share one in-flight `Task`.
 - **Memory:** an `NSCache` with `countLimit = 100`. It's "about 100" because `NSCache` may evict earlier under memory pressure.
 - **Launch preload:**
@@ -783,7 +805,8 @@ protocol ImageProvider: Sendable {
   - It yields between files, so `image(forProductId:)` calls are served meanwhile. Home is never delayed by it.
 - **Writing to disk:**
   - Each downloaded image is written shortly after download, with pending writes batched.
-  - Anything still pending is flushed when the app goes to the background (`UIApplication.didEnterBackgroundNotification`). The provider subscribes to it privately in `init`, so the single public function stays the only one.
+  - Anything still pending is flushed when the app goes to the background (`UIApplication.didEnterBackgroundNotification`). The provider subscribes to it privately when it starts, through `NotificationCenter.notifications(named:)` in a task it cancels on `deinit`, so the single public function stays the only one.
+  - The composition root sets the write delay to **2 seconds**.
   - Nothing relies on an exit callback, because iOS often terminates suspended apps without one.
 - **Disk:**
   - One file per product id in `Caches/ProductImages/`, holding the bytes as received.
@@ -792,7 +815,7 @@ protocol ImageProvider: Sendable {
 - **Errors:** disk problems are never fatal. A failed read counts as a miss, and a failed write is dropped. Network errors are rethrown.
 
 **Tile images are driven by the view model** (D-022):
-- Each view model that shows images owns a `ProductImageLoader` (`@MainActor @Observable`), which calls `ImageProvider` and keeps one state per product id: `loading`, `loaded(UIImage)` or `failed`.
+- Each view model that shows images owns a `ProductImageLoader` (`@MainActor @Observable`), which calls `ImageProvider` and keeps one `ProductImageState` per product id: `loading`, `loaded(UIImage)` or `failed`.
 - The view reports that a tile appeared (`viewModel.tileAppeared(id:)`). It renders `viewModel.imageState(for:)` as a placeholder, the image, or a "failed" icon.
 - Each id is requested once per screen.
 - The product detail image works the same way.
@@ -820,9 +843,11 @@ protocol ImageProvider: Sendable {
   - `API_BASE_URL = $(API_BASE_URL)`
   - `REQUEST_TIMEOUT_SECONDS = $(REQUEST_TIMEOUT_SECONDS)`
 - It is the only code that reads those values. There's no URL or timeout in Swift source.
-- A missing or invalid value makes it throw:
+- A missing or invalid value makes it throw, naming the `Info.plist` key:
   - the URL isn't absolute `http`/`https` with a host;
   - or the timeout isn't a positive number.
+
+  The bootstrapper turns that into `.configurationError(message)`, where the message names the key (a build setting name, never a value or a secret).
 
 **Build configurations and schemes** (D-039):
 
@@ -861,6 +886,8 @@ protocol ImageProvider: Sendable {
 | **Search results** | `.searchResults(query:)` | `SearchResultsViewModel` | `search(ProductQuery(q:))` → `ViewState<SearchResultsViewData>` | No results: "No products match '{q}'." | search submit → `showSearchResults`; tile → `showProduct` |
 | **Product detail** | `.product(id:)` | `ProductDetailViewModel` | `product(id:)` → `ViewState<ProductDetailViewData>` | 404: "This product is no longer available." | Enquire → `showEnquiry` |
 | **Enquiry** (sheet) | `Sheet.enquiry` | `EnquiryViewModel` | `submit(EnquiryRequest)` | none: it's a form (§7.8.5) | submit; Done → `dismissSheet` |
+
+**Phase 1 (foundation):** until the screens are built in phase 2, `makeHome()` returns `HomePlaceholderView` (a "Catalogue" title and "Products are on their way."), and the routes and the sheet have no screens yet. The placeholder is removed when `HomeView` lands.
 
 Every screen except Enquiry uses the states and loading rules in §7.11. Any error other than the 404s above shows the error state with Retry.
 
@@ -1007,7 +1034,7 @@ enum ViewState<Value> {
   - **A second `load()` while one is running is ignored.** So is a `load()` once the screen is loaded or empty, which means going Back to Home doesn't reload it. A load that was cancelled before it finished runs again on the next appearance.
   - **`retry()`** sets `.loading`, so the spinner shows again, and then loads.
 - **`ProductTileView`** renders `ProductTileViewData` and an image state (placeholder, image, or "failed" icon). It reports its appearance so the view model can load the image (§7.6).
-- **`ConfigurationErrorView`** shows a fixed message with no Retry, because configuration is fixed at build time.
+- **`ConfigurationErrorView`** shows a fixed title and the bootstrapper's message naming the bad key, with no Retry, because configuration is fixed at build time.
 
 ---
 
@@ -1214,3 +1241,4 @@ None open.
 | 0.16 | 2026-11-26 | Linked the reader guides `BACKEND_ARCHITECTURE.md` and `API_CONTRACT.md` from the header. They explain and link to this blueprint, which stays the single source of truth. |
 | 0.17 | 2026-11-26 | Drift fix (docs only): §5.2 describes `TtlCache.ts` as stale-while-revalidate with retry back-off and the 24 h cap, matching the code since v0.7. |
 | 0.18 | 2026-11-26 | iOS design (docs only). §7 rewritten:<br>• the project at `iOS/ANSR/ANSR.xcodeproj` with targets `ANSR` and `ANSRTests` (no UI tests), Swift 6 with default isolation `nonisolated` and Approachable Concurrency off, simulator only;<br>• the UIKit lifecycle hosting SwiftUI through `AppBootstrapper`;<br>• Debug and Prod configurations with shared schemes;<br>• dumb views and two model layers (data models and per-screen view data);<br>• repositories named by role and how (`ProductRepository` / `RemoteProductRepository`, and so on), replacing "services";<br>• `HybridImageProvider` (memory → disk → network);<br>• one navigator protocol per view model, with thin coordinator entry points;<br>• the Home, Category, Search results, Product detail and Enquiry screens;<br>• `ViewState` with no idle state;<br>• formatting, `Strings` and theme rules; accessibility out of scope.<br>The §7.8 screens table is fixed, and 7.10 Repositories and 7.11 Screen states are new. §1 out of scope, §4 overview and layout, §8.1, §8.2 and §8.4 iOS run and test steps, §9.2 requirement-linked iOS tests with a manual walkthrough on both schemes, §9.3 iOS column, and §12 iOS future items are all updated. Header links `FRONTEND_ARCHITECTURE.md`. D-030 to D-041. |
+| 0.19 | 2026-11-26 | iOS phase 1, the foundation. §7.1 says how `Info.plist` is wired (its own file merged with the generated one, the scene manifest naming `SceneDelegate`, the ATS local-networking exception in Debug only through Info.plist preprocessing, D-042) and how xcconfig URLs are written (`http:/$()/…`). Details settled while building: `CoordinatorView` (§7.4); per-segment path encoding, query encoding of `+&=?#/`, the encodable body and the status-and-code rule (§7.5); `ProductImageState`, `ImageProviderError.undecodableImage`, the 2 s write delay and the cancellable background subscription (§7.6); the configuration error names the bad key (§7.7, §7.11); `ProductTileViewData` lives in `Shared/` (§7.2, §7.3); the phase 1 placeholder Home (§7.8). |

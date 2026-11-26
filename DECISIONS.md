@@ -488,6 +488,19 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
 - **Trade-off:** the app is not reviewed for VoiceOver or large text. That must happen before a public release.
 - **Blueprint:** §1, §7.9
 
+### D-042 — Debug-only ATS exception through Info.plist preprocessing
+- **Decision:** One `ANSR/Info.plist`, preprocessed (`INFOPLIST_PREPROCESS = YES`). The `NSAppTransportSecurity` → `NSAllowsLocalNetworking` block sits between `#if ANSR_ALLOW_LOCAL_NETWORKING` and `#endif`, and only the Debug target settings define that macro. The `#if` lines are inside XML comments, so the file on disk is still a valid plist.
+- **Why:**
+  - The built Prod app has **no** ATS key at all, which `plutil -p` shows directly, rather than a key set to `NO`.
+  - One file holds every app key, instead of a near-copy per configuration.
+  - No build-phase script editing the built `Info.plist`, which would need user-script sandboxing turned off.
+- **Alternatives considered:**
+  - A build setting such as `$(ALLOWS_LOCAL_NETWORKING)`: it gives the string `"YES"`/`"NO"` rather than a Boolean, and leaves the key in Prod.
+  - `Info-Debug.plist` and `Info-Prod.plist`: two files to keep in step.
+  - A run script with `PlistBuddy`: sandboxing has to be off, and the ordering against Info.plist processing is fragile.
+- **Trade-off:** the comment-wrapped `#if` is unusual. A note in the file and in the blueprint says why it is there. Xcode's plist editor shows the ATS keys in both configurations, because it doesn't run the preprocessor.
+- **Blueprint:** §7.1, §7.7
+
 ---
 
 ## Process
