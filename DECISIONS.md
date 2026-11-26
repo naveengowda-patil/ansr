@@ -358,6 +358,8 @@ All entries below were agreed with the product owner on 2026-11-22 and 2026-11-2
   - Today paging is offset-based (`page`, `pageSize`).
   - If the catalogue refreshes mid-browse, items can shift between pages, so a user may see one twice or miss one.
   - A cursor (for example, the last item's sort key and id) keeps pages stable.
+- **Request logging.** One `info` line per request (`method`, `path`, `status`, `durationMs`), so normal traffic and response times are visible. Today only rejected (4xx) and failed (5xx) requests are logged.
+- **Request ids.** Generate one per request, or accept an incoming `X-Request-Id`. Add it to every log line and return it in a response header, so all the lines for one request can be tied together.
 - **Set up environments: Dev, Staging and Prod.**
   - Each gets its own xcconfig (base URL, app name, bundle id).
   - Each gets its own scheme.

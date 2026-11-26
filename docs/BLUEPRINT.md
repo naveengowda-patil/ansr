@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.10, backend implemented |
+| Status | v0.11, backend implemented |
 | Last updated | 2026-11-25 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -103,7 +103,8 @@ backend/
 │   │   ├── ProductRepository.ts
 │   │   ├── ProductSearchEngine.ts
 │   │   ├── EmailService.ts
-│   │   └── Logger.ts
+│   │   ├── Logger.ts
+│   │   └── Clock.ts             # type Clock = () => number (ms); durations and cache ages
 │   ├── domain/              # pure business rules, no I/O
 │   │   ├── product.ts           # Product, Rating types
 │   │   ├── email.ts             # EmailMessage type (provider-agnostic)
@@ -149,6 +150,7 @@ interface AppDeps {
   searchEngine: ProductSearchEngine;
   emailService: EmailService;
   logger: Logger;
+  now: Clock;                   // durations (search.executed); injected so tests control time
   settings: {
     featuredProductIds: readonly number[];
     salesInboxEmail: string;
@@ -250,8 +252,8 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
 - Receives through its constructor:
   - `fetch`, `baseUrl` and `timeoutMs`
   - `imageHostAllowlist`, `imageTimeoutMs` and `imageMaxBytes`
-  - two `TtlCache` instances, `catalogueCache` and `imageCache`, created in `container.ts`, which owns the TTL, stale cap, retry back-off, size bound and clock
-  - a `Logger`
+  - two `TtlCache` instances, `catalogueCache` and `imageCache`, created in `container.ts`, which owns the TTL, stale cap, retry back-off, size bound, clock, and the cache's `name` and `Logger` (for the `cache.*` debug events, §5.11)
+  - a `Logger`, and a `Clock` (`now`) for the `upstream.request` / `image.fetched` durations
 - **One upstream call for data:** `GET {baseUrl}/products` loads the whole catalogue (≈20 items). `getById`, `getByIds` and `listCategories` are derived from that cached snapshot (categories = distinct values in first-seen order).
 - **Timeout:** every catalogue request uses `AbortSignal.timeout(PRODUCT_API_TIMEOUT_MS)` (images have their own, below).
 - **Cache: stale-while-revalidate** (D-011). The catalogue snapshot, and each image, is held in a `TtlCache`. A request never waits for Fake Store when a usable copy exists.
@@ -332,6 +334,7 @@ Swapping engines (e.g. OpenSearch) = a new adapter implementing `ProductSearchEn
   - either **port 587 with `SMTP_SECURE=false`**: the connection starts plain and is upgraded with STARTTLS, which nodemailer does automatically when the server offers it, and SES requires it before AUTH;
   - or **port 465 with `SMTP_SECURE=true`**: TLS from the first byte.
 - Logs record the product id and outcome only, not the customer's name, email or message.
+- `SmtpEmailService` receives `(transport, logger, now)`. It logs `email.sending` / `email.sent` at debug with `durationMs` only: no addresses, names, subject or body (§5.11).
 - `SmtpEmailService` depends on a narrow `MailTransport` interface (`sendMail` only), not on nodemailer types.
   - The nodemailer transport is created in `container.ts` from `smtpTransportOptions(config)`, through an injectable factory (default `nodemailer.createTransport`), so tests can check the options it receives.
   - Tests use nodemailer's stream transport (no SMTP server) or a stub transport.
@@ -385,6 +388,41 @@ Every variable is one of three kinds:
 | `MAIL_FROM` | **Required** | `catalogue@example.com` | Valid email address |
 | `SALES_INBOX_EMAIL` | **Required** | `sales@example.com` | Valid email address |
 | `JSON_BODY_LIMIT` | Default | `10kb` | |
+
+### 5.11 Log events
+
+One JSON line per event on stdout (`JsonLogger`): `{ time, level, msg, ...context }`. `msg` is a stable event name. `LOG_LEVEL` (default `info`) drops anything below it.
+
+**Rules:**
+- **Debug events are for troubleshooting only.** Nothing changes at the default `LOG_LEVEL=info`.
+- **No customer data and no secrets in any line, at any level.** That means no customer names, email addresses or messages; no `SMTP_USER` or `SMTP_PASS`; no configured email addresses.
+- **Durations come from the injected `Clock`** (`now`, created in `container.ts`), never from scattered `Date.now()` calls, so tests can control them. Durations and ages are whole milliseconds.
+- **The logger and clock are injected through constructors and options.** Only `container.ts` creates concrete ones.
+
+| Event | Level | Where | Context |
+|---|---|---|---|
+| `config.loaded` | debug | `container.ts`, once at startup | allowlisted safe values only (`safeConfigSummary`): `port`, `logLevel`, cache TTL / stale cap / retry back-off, upstream / image / SMTP timeouts, image cache size and limits, `featuredProductIds`, `imageHostAllowlist`, `smtp: { host, port, secure }`. Never `SMTP_USER`, `SMTP_PASS` or email addresses. |
+| `cache.hit` | debug | `TtlCache` | `cache` (`catalogue` \| `image`), `key`, `ageMs` |
+| `cache.stale` | debug | `TtlCache` | `cache`, `key`, `ageMs`. The copy is served while a background refresh may start. |
+| `cache.miss` | debug | `TtlCache` | `cache`, `key`, `ageMs` (`null` when there is no copy; the age when past the cap). The request waits. |
+| `upstream.request` | debug | Fake Store adapter, catalogue fetch | `path`, `status` (HTTP status, `"timeout"` or `"network_error"`), `durationMs` |
+| `image.fetched` | debug | Fake Store adapter | `productId`, `bytes`, `contentType`, `durationMs` |
+| `search.executed` | debug | products route | `q`, `filters` (only those present), `sort`, `page`, `pageSize`, `total`, `durationMs` |
+| `email.sending` | debug | `SmtpEmailService` | none |
+| `email.sent` | debug | `SmtpEmailService` | `durationMs` only |
+| `server.started` | info | `startup.ts` | `port` |
+| `catalogue.warmed` | info | `startup.ts` | `products` (count) |
+| `enquiry.sent` | info | enquiries route | `productId` |
+| `request.rejected` | info | error middleware (4xx) | `method`, `path`, `status`, `code`, `message` |
+| `server.stopping` | info | `server.ts` | `signal` |
+| `search.unsupported` | warn | products route | `param`, `value`, `engine` |
+| `catalogue.refresh_failed` | warn | Fake Store adapter | `ageSeconds`, `reason` |
+| `image.refresh_failed` | warn | Fake Store adapter | `productId`, `ageSeconds`, `reason` |
+| `catalogue.warmup_failed` | warn | `startup.ts` | `reason` |
+| `request.failed` | error | error middleware (5xx) | `method`, `path`, `status`, `code`, `error` (serialised, with cause) |
+| `server.close_failed` | error | `server.ts` | `error` |
+| `server.shutdown_timeout` | error | `server.ts` | `graceMs` |
+| `server.start_failed` | error | `server.ts`, written to stderr before a logger exists | `message` |
 
 ---
 
@@ -703,6 +741,7 @@ Tests never hit the real network. They test behaviour through public interfaces,
 | Search plug-and-play | Supertest + mock `Logger` | The **default `InMemorySearchEngine` (text search only)**: `category`, `minPrice`, `maxPrice`, `minRating` and each non-relevance sort → 400 naming it, with a warning logged (`param`, `value`, engine name); `q`, `sort=relevance` and paging work. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. With `allCapabilities()`, the real engine serves `category` + sort through the route. |
 | `InMemorySearchEngine` | Unit | default = `textSearchOnly()`; with `allCapabilities()`: each filter and sort (additional, not enabled in the running app), category filter case-insensitive, combined filters; paging and total; relevance = upstream order; searches the latest snapshot after re-indexing |
 | Categories route | Supertest | `/categories/JEWELERY` matches and returns `jewelery` as the data spells it; unknown → 404 |
+| Debug log events (§5.11) | Recording logger per component; end-to-end through `createContainer` with injected `fetch`, mail transport and log writer | each event is logged with the expected context; with `LOG_LEVEL=info` none of them is written; `config.loaded` never contains `SMTP_USER`, `SMTP_PASS` or an email address; `email.sending` / `email.sent` never contain the customer's name, email or message |
 | `container.ts` | Unit (no network) | the running app's search engine is `textSearchOnly()`; settings flow from config; the SMTP transport receives `connectionTimeout`, `greetingTimeout` and `socketTimeout` = `SMTP_TIMEOUT_MS` |
 | Enquiry route (email) | Supertest | send fails (502): logs contain no customer name, email or message; tab, `\u0000` and `\u007F` in `name` and in `email` → 400; `productId` `7.5`, `0`, `-1` (and `"7"`) → 400 |
 | `FakeStoreProductRepository` | Injected `fetch` returning recorded fixtures (`test/fixtures/fakestore/`) + fake clock + mock `Logger` | Mapping; single-flight; timeout, non-2xx or schema mismatch → `UpstreamError`.<br>**Stale-while-revalidate, catalogue and image:**<br>• an expired copy is returned without waiting for upstream (the upstream response is held back until after the assertion);<br>• exactly one background refresh for concurrent requests;<br>• a successful refresh replaces the copy;<br>• a failed refresh keeps serving the old copy and logs once;<br>• back-off is respected (no refresh inside the window, one after it);<br>• past the 24 h cap the request waits and gets `UpstreamError`;<br>• no copy + failure → `UpstreamError`.<br>**Image guards, one test each:** host not in allowlist (no request made); redirect rejected; timeout; JPEG/PNG/WebP/GIF accepted (normalised type), SVG and non-images rejected; oversize rejected, both by `Content-Length` and by the streamed body. |
@@ -794,3 +833,4 @@ None open.
 | 0.8 | 2026-11-25 | Search review. Category matching is case-insensitive everywhere (`sameCategory`; `/categories/JEWELERY` returns `jewelery`). Capabilities are explicit: `InMemorySearchEngine` defaults to `textSearchOnly()`, which `container.ts` passes explicitly. **The running app does text search only.** The other filters and sorts are labelled "additional, built and unit-tested, not enabled in the running app". §6.4 has a "running app" column. |
 | 0.9 | 2026-11-25 | §12 Future: cursor-based paging added next to Tuist. Docs only. |
 | 0.10 | 2026-11-25 | Enquiry flow review. `SMTP_TIMEOUT_MS` (default 10000) is applied to the connection, greeting and socket timeouts, and a hung send → 502. The transport is built via `smtpTransportOptions(config)` and an injectable factory. Precise SES settings (587 + `SMTP_SECURE=false` with STARTTLS, or 465 + `SMTP_SECURE=true`). `productId` must be a positive integer JSON number (§6.9, §7.5). Tests added for no customer data in failure logs, control characters, productId shapes and the SMTP timeout. |
+| 0.11 | 2026-11-26 | Logger review. New §5.11 "Log events" lists every event, its level and its context. Debug events added: `config.loaded` (safe allowlisted summary), `cache.hit` / `cache.miss` / `cache.stale`, `upstream.request`, `image.fetched`, `search.executed`, `email.sending` / `email.sent`. `TtlCache` receives `name` + `Logger`; the repository, `SmtpEmailService` and the products route receive an injected `Clock` (`ports/Clock.ts`, `AppDeps.now`). Rules: debug only, no customer data or secrets, durations from the injected clock. |
