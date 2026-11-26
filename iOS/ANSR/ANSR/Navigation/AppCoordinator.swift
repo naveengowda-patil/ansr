@@ -93,8 +93,7 @@ import SwiftUI
             // Placeholder until Product detail lands.
             .placeholder(title: Strings.placeholderProduct(id: id))
         case .searchResults(let query):
-            // Placeholder until Search results lands.
-            .placeholder(title: Strings.placeholderSearch(query: query))
+            .searchResults(makeSearchResults(query: query))
         }
     }
 
@@ -103,9 +102,21 @@ import SwiftUI
         switch screen(for: route) {
         case .category(let viewModel):
             CategoryView(viewModel: viewModel)
+        case .searchResults(let viewModel):
+            SearchResultsView(viewModel: viewModel)
         case .placeholder(let title):
             RoutePlaceholderView(title: title)
         }
+    }
+
+    private func makeSearchResults(query: String) -> SearchResultsViewModel {
+        SearchResultsViewModel(
+            query: query,
+            productRepository: dependencies.productRepository,
+            imageProvider: dependencies.imageProvider,
+            navigator: self,
+            locale: dependencies.locale
+        )
     }
 
     private func makeCategory(name: String) -> CategoryViewModel {

@@ -66,6 +66,27 @@ struct AppCoordinatorTests {
         #expect(coordinator.path == [.product(id: 5)])
     }
 
+    @Test("The search results route builds the Search results screen for that query, with the coordinator as its navigator")
+    func searchResultsRouteBuildsSearchResultsScreen() async {
+        guard case .searchResults(let viewModel) = coordinator.screen(for: .searchResults(query: "bracelet")) else {
+            Issue.record("Expected the Search results screen")
+            return
+        }
+        #expect(viewModel.query == "bracelet")
+        #expect(viewModel.searchText == "bracelet")
+
+        await viewModel.load()
+        guard case .loaded(let data) = viewModel.state else {
+            Issue.record("Expected the mock search to find the bracelet, got \(viewModel.state)")
+            return
+        }
+        #expect(data.results.map(\.id) == [5])
+
+        viewModel.searchText = "ring"
+        viewModel.didSubmitSearch()
+        #expect(coordinator.path == [.searchResults(query: "ring")])
+    }
+
     @Test("Routes without a screen yet show a placeholder naming them")
     func otherRoutesArePlaceholders() {
         guard case .placeholder(let title) = coordinator.screen(for: .product(id: 5)) else {

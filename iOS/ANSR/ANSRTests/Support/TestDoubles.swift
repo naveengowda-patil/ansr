@@ -1,15 +1,27 @@
 import UIKit
 @testable import ANSR
 
-/// Product repository test double: returns the configured result, counts calls, and can hold the next `featured()` call.
+/// Product repository test double: returns the configured results, records calls, and can hold the next
+/// `featured()` or `search(_:)` call.
 actor StubProductRepository: ProductRepository {
     private var featuredResult: Result<[Product], APIError>
+    private var searchResult: Result<ProductPage, APIError>
     private var featuredHold: Hold?
+    private var searchHold: Hold?
     private(set) var featuredCallCount = 0
+    private(set) var searchQueries: [ProductQuery] = []
 
-    init(featured: Result<[Product], APIError> = .success([])) {
+    init(
+        featured: Result<[Product], APIError> = .success([]),
+        search: Result<ProductPage, APIError> = .success(ProductPage(items: [], total: 0, page: 1, pageSize: 20))
+    ) {
         self.featuredResult = featured
+        self.searchResult = search
     }
+
+    func setSearch(_ result: Result<ProductPage, APIError>) { searchResult = result }
+    /// Holds only the next call to `search(_:)`; later calls go straight through.
+    func holdSearch(_ hold: Hold?) { searchHold = hold }
 
     func setFeatured(_ result: Result<[Product], APIError>) { featuredResult = result }
     /// Holds only the next call to `featured()`; later calls go straight through.
@@ -25,7 +37,12 @@ actor StubProductRepository: ProductRepository {
     }
 
     func search(_ query: ProductQuery) async throws(APIError) -> ProductPage {
-        ProductPage(items: [], total: 0, page: 1, pageSize: 20)
+        searchQueries.append(query)
+        if let hold = searchHold {
+            searchHold = nil
+            await hold.wait()
+        }
+        return try searchResult.get()
     }
 
     func product(id: Int) async throws(APIError) -> Product {
@@ -100,6 +117,20 @@ final class RecordingCategoryNavigator: CategoryNavigating {
     func showProduct(id: Int) { shownProducts.append(id) }
 }
 
+/// Records every Search results navigation call, in order.
+@MainActor
+final class RecordingSearchResultsNavigator: SearchResultsNavigating {
+    enum Call: Equatable {
+        case product(id: Int)
+        case searchResults(query: String)
+    }
+
+    private(set) var calls: [Call] = []
+
+    func showProduct(id: Int) { calls.append(.product(id: id)) }
+    func showSearchResults(query: String) { calls.append(.searchResults(query: query)) }
+}
+
 /// Products shaped like the backend's (BLUEPRINT §6.1).
 enum Fixtures {
     static func product(id: Int, title: String, price: String, rate: Double, count: Int, category: String = "jewelery") -> Product {
@@ -124,6 +155,17 @@ enum Fixtures {
     ]
 
     static let categories = ["men's clothing", "jewelery", "electronics", "women's clothing"]
+
+    /// `GET /products?q=ring`: two matches, in API order.
+    static let ringPage = ProductPage(
+        items: [
+            product(id: 7, title: "Princess Ring", price: "9.99", rate: 3, count: 400),
+            product(id: 5, title: "Dragon Bracelet with ring clasp", price: "695", rate: 4.6, count: 400),
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 20
+    )
 
     /// `GET /categories/jewelery`: the top 3 by rating, then the rest, each in API order.
     static let jewelery = CategoryProducts(
