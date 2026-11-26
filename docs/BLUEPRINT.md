@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| Status | v0.12, backend implemented |
-| Last updated | 2026-11-25 |
+| Status | v0.13, backend implemented |
+| Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
 
@@ -128,8 +128,18 @@ backend/
 │       └── TtlCache.ts          # TTL cache: single-flight refetch, stale fallback on error, injected clock
 ├── test/
 │   ├── fixtures/fakestore/      # products.json, recorded from GET /products (image tests use inline bytes)
-│   ├── support/                 # fakes.ts (in-memory port fakes, buildProduct) + testApp.ts (createApp wired with fakes)
-│   └── *.test.ts
+│   ├── support/
+│   │   ├── fakes.ts             # in-memory port fakes, recording logger, buildProduct
+│   │   ├── testApp.ts           # createApp wired with the fakes
+│   │   └── fakeStore.ts         # fake Fake Store responses (fixture, fake fetch, fake clock) for the real repository
+│   ├── domain/                  # pure business rules
+│   ├── lib/                     # TtlCache
+│   ├── adapters/                # Fake Store repository, search engine, SMTP email, JSON logger
+│   ├── routes/                  # Supertest, per resource + search plug-and-play + errors
+│   ├── config.test.ts
+│   ├── container.test.ts
+│   ├── logging.test.ts          # debug events end to end through createContainer
+│   └── startup.test.ts
 ├── Dockerfile  package.json  tsconfig.json  .nvmrc
 ```
 
@@ -251,7 +261,7 @@ Adapters signal upstream failures by throwing `UpstreamError`; "not found" is `u
   - `allCapabilities()`: every filter and sort.
   - Paging is always supported and isn't listed.
 - **Capability check** — `findUnsupported(query, capabilities)`: returns each filter present in the query, and the sort, that the engine doesn't support, as `{ param, value }` pairs.
-- **Enquiry email** — `buildEnquiryEmail(product, enquiry, settings) → EmailMessage` (§5.8).
+- **Enquiry email** — `buildEnquiryEmail(product, enquiry, settings, receivedAt) → EmailMessage` (§5.8). The route passes `receivedAt` (`new Date()`), so the function stays pure and tests get an exact timestamp.
 
 ### 5.6 Fake Store adapter (`FakeStoreProductRepository`)
 
@@ -843,3 +853,4 @@ None open.
 | 0.10 | 2026-11-25 | Enquiry flow review. `SMTP_TIMEOUT_MS` (default 10000) is applied to the connection, greeting and socket timeouts, and a hung send → 502. The transport is built via `smtpTransportOptions(config)` and an injectable factory. Precise SES settings (587 + `SMTP_SECURE=false` with STARTTLS, or 465 + `SMTP_SECURE=true`). `productId` must be a positive integer JSON number (§6.9, §7.5). Tests added for no customer data in failure logs, control characters, productId shapes and the SMTP timeout. |
 | 0.11 | 2026-11-26 | Logger review. New §5.11 "Log events" lists every event, its level and its context. Debug events added: `config.loaded` (safe allowlisted summary), `cache.hit` / `cache.miss` / `cache.stale`, `upstream.request`, `image.fetched`, `search.executed`, `email.sending` / `email.sent`. `TtlCache` receives `name` + `Logger`; the repository, `SmtpEmailService` and the products route receive an injected `Clock` (`ports/Clock.ts`, `AppDeps.now`). Rules: debug only, no customer data or secrets, durations from the injected clock. |
 | 0.12 | 2026-11-26 | Container test seams documented in §5.3: `now` override (default `performance.now()`) and `Container.whenIdle()`. §9 states that tests never sleep. The end-to-end logging test uses a fake clock and `whenIdle()` instead of real sleeps. |
+| 0.13 | 2026-11-26 | Drift fixes (docs only): §5.2 test tree shows the sub-folders, the top-level test files and `test/support/fakeStore.ts`; §5.5 `buildEnquiryEmail` takes `receivedAt`; "Last updated" set to 2026-11-26. |
