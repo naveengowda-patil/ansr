@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.16, backend implemented |
+| Status | v0.17, backend implemented |
 | Last updated | 2026-11-26 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -126,7 +126,7 @@ backend/
 │   │   ├── email/               # SmtpEmailService (nodemailer)
 │   │   └── logging/             # JsonLogger
 │   └── lib/
-│       └── TtlCache.ts          # TTL cache: single-flight refetch, stale fallback on error, injected clock
+│       └── TtlCache.ts          # TTL cache: stale-while-revalidate (expired copy served while one background refresh runs), retry back-off, 24 h stale cap, single-flight, injected clock
 ├── test/
 │   ├── fixtures/fakestore/      # products.json, recorded from GET /products (image tests use inline bytes)
 │   ├── support/
@@ -864,3 +864,4 @@ None open.
 | 0.14 | 2026-11-26 | §9.1: a config test proves that one `ConfigError` lists every invalid variable, not just the first. |
 | 0.15 | 2026-11-26 | One-command start: Compose loads `.env.example` as defaults and an optional `.env` for overrides, so `docker compose up --build` works from a fresh clone. Needs Compose 2.24+ (§3, §5.10, §8.1, §8.2, §8.4; D-029). |
 | 0.16 | 2026-11-26 | Linked the reader guides `BACKEND_ARCHITECTURE.md` and `API_CONTRACT.md` from the header. They explain and link to this blueprint, which stays the single source of truth. |
+| 0.17 | 2026-11-26 | Drift fix (docs only): §5.2 describes `TtlCache.ts` as stale-while-revalidate with retry back-off and the 24 h cap, matching the code since v0.7. |
