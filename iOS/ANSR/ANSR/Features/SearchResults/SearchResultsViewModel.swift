@@ -5,18 +5,26 @@ import Observation
 @MainActor @Observable
 final class SearchResultsViewModel {
     private(set) var state: ViewState<SearchResultsViewData> = .loading
-    /// The search field's text, prefilled with this screen's query. While search mode is off it always goes back to
-    /// the query: the system clears the field when search mode ends (Cancel), and that write is put back.
+    /// The search field's text, prefilled with this screen's query. Writes are kept as they come (so the ✕ clears in
+    /// one tap), except the one extra `""` the system sends after Cancel, which is put back (§7.8.3, D-044).
     var searchText: String {
         didSet {
-            if !isSearchActive, searchText != query { searchText = query }
+            guard isExpectingSystemClear, !isSearchActive, searchText.isEmpty else { return }
+            isExpectingSystemClear = false
+            searchText = query
         }
     }
     /// Whether the search field is in search mode (Cancel showing). Bound by the view; ended by a submit that navigates.
-    /// When it ends without a submit (Cancel), the field goes back to this screen's query.
+    /// When it ends without a submit (Cancel), the field goes back to this screen's query, and the system's one more
+    /// `""` is expected. Starting search mode drops that expectation.
     var isSearchActive = false {
         didSet {
-            if oldValue, !isSearchActive, !isLeavingForNewSearch { searchText = query }
+            if isSearchActive {
+                isExpectingSystemClear = false
+            } else if oldValue, !isLeavingForNewSearch {
+                searchText = query
+                isExpectingSystemClear = true
+            }
         }
     }
     /// This screen's query, trimmed, as the user submitted it.
@@ -37,6 +45,8 @@ final class SearchResultsViewModel {
     @ObservationIgnored private weak var navigator: (any SearchResultsNavigating)?
     @ObservationIgnored private var isLoading = false
     @ObservationIgnored private var isLeavingForNewSearch = false
+    /// Set when Cancel has put the query back: the system clears the field once more, and that `""` is put back too.
+    @ObservationIgnored private var isExpectingSystemClear = false
 
     init(
         query: String,

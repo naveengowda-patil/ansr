@@ -145,18 +145,72 @@ struct SearchResultsViewModelTests {
         #expect(viewModel.searchText == text)
     }
 
-    @Test("Ending search mode without a submit (Cancel, which clears the field) puts this screen's query back")
-    func cancelRestoresQuery() {
-        viewModel.isSearchActive = true
-        viewModel.searchText = "jack"
+    /// Cancel as logged at runtime (BLUEPRINT §7.8): `""` while in search mode, search mode ends, then one more `""`.
+    /// The system also repeats writes with an unchanged value.
+    private func cancel(_ viewModel: SearchResultsViewModel) {
         viewModel.searchText = ""
         viewModel.isSearchActive = false
+        let unchanged = viewModel.searchText
+        viewModel.searchText = unchanged
+        viewModel.searchText = ""
+        viewModel.isSearchActive = false
+    }
+
+    /// The ✕ outside search mode, as logged at runtime: `""` while search mode is off, then search mode starts.
+    private func tapClearOutsideSearchMode(_ viewModel: SearchResultsViewModel) {
+        viewModel.searchText = ""
+        viewModel.isSearchActive = true
+    }
+
+    @Test("Cancel puts this screen's query back, typed text or not, including after the system's one more clear",
+          arguments: ["", "bag"])
+    func cancelRestoresQuery(typed: String) {
+        viewModel.isSearchActive = true
+        viewModel.searchText += typed
+
+        cancel(viewModel)
+
+        #expect(viewModel.searchText == "ring")
+        #expect(!viewModel.isSearchActive)
+        #expect(navigator.calls.isEmpty)
+    }
+
+    @Test("The ✕ outside search mode, with no Cancel before it, clears the field in one tap")
+    func clearOutsideSearchModeClears() {
+        tapClearOutsideSearchMode(viewModel)
+
+        #expect(viewModel.searchText == "")
+        #expect(viewModel.isSearchActive)
+    }
+
+    @Test("After Cancel has put the query back, the ✕ still clears the field in one tap")
+    func clearAfterCancelClears() {
+        viewModel.isSearchActive = true
+        cancel(viewModel)
         #expect(viewModel.searchText == "ring")
 
-        // The system clears the field again once search mode has ended; that is put back too.
+        tapClearOutsideSearchMode(viewModel)
+
+        #expect(viewModel.searchText == "")
+        #expect(viewModel.isSearchActive)
+    }
+
+    @Test("Starting search mode drops the expected clear, so a later ✕ is kept even if that clear never came")
+    func startingSearchModeDropsTheExpectedClear() {
+        viewModel.isSearchActive = true
         viewModel.searchText = ""
+        viewModel.isSearchActive = false // Cancel, without the system's one more ""
         #expect(viewModel.searchText == "ring")
-        #expect(navigator.calls.isEmpty)
+
+        viewModel.isSearchActive = true // tap into the field
+        viewModel.searchText = "jacket"
+        viewModel.didSubmitSearch()
+        viewModel.screenAppeared()
+        #expect(viewModel.searchText == "ring")
+
+        tapClearOutsideSearchMode(viewModel)
+
+        #expect(viewModel.searchText == "")
     }
 
     @Test("Curly quotes are submitted as straight ones, and count as the same term")
