@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.28, backend implemented, every iOS screen built, polished and documented for submission (phase 3.1) |
+| Status | v0.29, backend implemented, every iOS screen built, polished and documented for submission (phases 3.1 and 3.2) |
 | Last updated | 2026-11-27 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -65,7 +65,7 @@ Repository layout:
 /
 ├── CLAUDE.md  DECISIONS.md  AI_USAGE.md  README.md
 ├── .env.example  .gitignore  docker-compose.yml
-├── docs/             # BLUEPRINT.md + reader guides
+├── docs/             # BLUEPRINT.md, reader guides, PROMPT_LOG.md (every key prompt)
 ├── backend/          # Node.js + TypeScript API
 └── iOS/ANSR/         # SwiftUI app (ANSR.xcodeproj, §7.2)
 ```
@@ -476,7 +476,7 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 
 | Param | Shape | Meaning (§5.5) | Running app |
 |---|---|---|---|
-| `q` | string, trimmed, 1–100 chars; present-but-blank → 400 | case-insensitive match on title, description or category | ✅ enabled |
+| `q` | string, trimmed, 1–100 chars; present-but-blank → 400; over 100 → 400 `q: must be 100 characters or fewer` | case-insensitive match on title, description or category | ✅ enabled |
 | `category` | string, 1–100 chars | category, case-insensitive | additional: 400 |
 | `minPrice`, `maxPrice` | number ≥ 0; `minPrice ≤ maxPrice` | inclusive price bounds | additional: 400 |
 | `minRating` | number 0–5 | `rating.rate ≥ minRating` | additional: 400 |
@@ -1153,6 +1153,7 @@ The **`ANSR Prod`** scheme uses the placeholder `https://api.example.com` and al
 The root `README.md` (written in the backend PR, completed in the iOS PR) covers:
 - What the project is, with links to this blueprint, `DECISIONS.md` and `AI_USAGE.md`.
 - **Why this stack:** SwiftUI on iOS, Node.js + TypeScript + Express on the backend, and why, in a few lines (D-025).
+- **Time spent:** the developer's own figures for planning, building, testing and reviewing, against the 2–3 hour time-box.
 - **Prerequisites:**
   - Docker with Compose 2.24 or newer.
   - **Xcode 16 or newer**, which is required for the iOS 18 deployment target and the synchronized-folder project format.
@@ -1178,7 +1179,7 @@ Tests never sleep. Time moves through an injected fake clock, and background wor
 | Area | How | Must cover |
 |---|---|---|
 | Domain | Unit tests on pure functions | ranking tie-break; `selectFeatured` (order kept, missing skipped, duplicates dropped, fill to 5, never >5, catalogue <5); `splitTopRated` (top 3, rest in upstream order, no duplicates, ≤3 products); `matchesText` (case-insensitive, title, description or category, phrase); `matchesFilters` (each filter, inclusive bounds, AND); `compareForSort` (each sort, tie-breaks); `findUnsupported`; `buildEnquiryEmail` (plain text, reply-to, subject CR/LF stripped) |
-| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; `pageSize=51` → 400 with `pageSize: must be between 1 and 50`; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
+| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; `pageSize=51` → 400 with `pageSize: must be between 1 and 50`; `q` of 101 characters → 400 with `q: must be 100 characters or fewer`; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
 | Search plug-and-play | Supertest + mock `Logger` | The **default `InMemorySearchEngine` (text search only)**: `category`, `minPrice`, `maxPrice`, `minRating` and each non-relevance sort → 400 naming it, with a warning logged (`param`, `value`, engine name); `q`, `sort=relevance` and paging work. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. With `allCapabilities()`, the real engine serves `category` + sort through the route. |
 | `InMemorySearchEngine` | Unit | default = `textSearchOnly()`; with `allCapabilities()`: each filter and sort (additional, not enabled in the running app), category filter case-insensitive, combined filters; paging and total; relevance = upstream order; searches the latest snapshot after re-indexing |
 | Categories route | Supertest | `/categories/JEWELERY` matches and returns `jewelery` as the data spells it; unknown → 404 |
@@ -1254,7 +1255,7 @@ Any change to requirements, architecture, the API contract, config, dependencies
 
 - Code matches the blueprint section it implements.
 - Relevant tests added and passing; each new test seen failing when the behaviour is broken.
-- `DECISIONS.md` / `AI_USAGE.md` updated where relevant.
+- `DECISIONS.md`, `AI_USAGE.md` (key moments, mistakes caught) and `docs/PROMPT_LOG.md` (the prompts that shaped the work) updated where relevant.
 - Summary states what changed, which blueprint section it follows, and which tests ran.
 
 ---
@@ -1318,3 +1319,4 @@ None open.
 | 0.26 | 2026-11-27 | iOS phase 2.6, two search field fixes found while testing. §7.8: search mode is driven by the view model's `isSearchActive` through `productSearchField(text:isPresented:onSubmit:)`, so a screen you come back to isn't still in search mode: Search results ends it at submit, Home when it appears again (ending it while covered left Home's large title collapsed). How the system treats the field on Cancel and on ending search mode, checked at runtime. §7.8.3: Cancel puts the screen's query back, writes while search mode is off go back to the query, and the query is set again when the screen reappears. §9.2 updated. (The three phase 2.5 blueprint commits all said v0.25; this is the next version.) |
 | 0.27 | 2026-11-27 | iOS phase 2.6 follow-up, a side effect of the Cancel fix found while testing: on a results screen not in search mode, the ✕ in the field needed two taps to clear it, because every write while search mode was off went back to the query. §7.8: the order of the system's writes for the ✕, Cancel, tapping into the field, a submit and Back, logged at runtime. §7.8.3: that blanket rule is replaced; after a Cancel only the system's one extra `""` is put back, other writes are kept, and no time delays are used (D-044). §9.2 updated. |
 | 0.28 | 2026-11-27 | iOS phase 3.1, polish and submission docs, no new behaviour. §6.4: `pageSize` over 50 gets the message `pageSize: must be between 1 and 50` and is never lowered (D-046); §9.1 test. §7.8: AC-3's "tap search" is the keyboard's Search key (D-045). §7.9: `background` and `secondaryBackground` are the grouped system colours, so tiles stand out in dark mode and Home's states share one background. §7.11: horizontal rows size tiles to show 2.3 so the next one peeks (`rowVisibleTiles` replaces the fixed tile width), and Category's row runs to the screen edges. §7.8.1: Home's list background hidden. §7.8.4: Enquire full width, the image on a card. §8.2 and §8.4: the README's "why this stack", real iOS steps, the `xcodebuild test` command with `OS=` (without it xcodebuild only looks at the newest runtime, found in the fresh-clone run), and the fresh-clone times. §12: "load more" on iOS search results. `.env.example`'s first comment no longer says to copy it. |
+| 0.29 | 2026-11-27 | Phase 3.2, last tidy-up before the PRs. §6.4, §9.1: `q` over 100 characters gets the message `q: must be 100 characters or fewer` instead of zod's default. §4 layout and §10.3: the prompt log moves from `AI_USAGE.md` to `docs/PROMPT_LOG.md`, and `AI_USAGE.md` keeps the key moments and the mistakes caught. §8.4: the README has a "Time spent" section. |
