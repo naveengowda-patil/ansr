@@ -7,6 +7,9 @@ final class HomeViewModel {
     private(set) var state: ViewState<HomeViewData> = .loading
     /// The search field's text. Bound by the view; submitted trimmed.
     var searchText = ""
+    /// Whether the search field is in search mode (Cancel showing). Bound by the view; ended when Home appears again
+    /// after a search, so it comes back with its large title.
+    var isSearchActive = false
 
     /// False while the trimmed search text is empty, so a submit does nothing.
     var canSearch: Bool { !trimmedSearchText.isEmpty }
@@ -84,9 +87,19 @@ final class HomeViewModel {
         navigator?.showCategory(name: name)
     }
 
+    /// Pushes the results for the trimmed text. Home has no query, so the field is cleared, matching what the system
+    /// shows once search mode ends. Blank text does nothing.
     func didSubmitSearch() {
         guard canSearch else { return }
         navigator?.showSearchResults(query: trimmedSearchText)
+        searchText = ""
+    }
+
+    /// Home appeared, first time or on Back: search mode is off. Ending it here rather than at submit lets the system
+    /// animate out of search mode on screen, so the large title comes back (ending it while Home is covered left the
+    /// title collapsed).
+    func screenAppeared() {
+        isSearchActive = false
     }
 
     private var trimmedSearchText: String {

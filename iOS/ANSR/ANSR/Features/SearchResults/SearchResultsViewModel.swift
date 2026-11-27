@@ -5,8 +5,20 @@ import Observation
 @MainActor @Observable
 final class SearchResultsViewModel {
     private(set) var state: ViewState<SearchResultsViewData> = .loading
-    /// The search field's text, prefilled with this screen's query.
-    var searchText: String
+    /// The search field's text, prefilled with this screen's query. While search mode is off it always goes back to
+    /// the query: the system clears the field when search mode ends (Cancel), and that write is put back.
+    var searchText: String {
+        didSet {
+            if !isSearchActive, searchText != query { searchText = query }
+        }
+    }
+    /// Whether the search field is in search mode (Cancel showing). Bound by the view; ended by a submit that navigates.
+    /// When it ends without a submit (Cancel), the field goes back to this screen's query.
+    var isSearchActive = false {
+        didSet {
+            if oldValue, !isSearchActive, !isLeavingForNewSearch { searchText = query }
+        }
+    }
     /// This screen's query, trimmed, as the user submitted it.
     let query: String
 
@@ -24,6 +36,7 @@ final class SearchResultsViewModel {
     @ObservationIgnored private let locale: Locale
     @ObservationIgnored private weak var navigator: (any SearchResultsNavigating)?
     @ObservationIgnored private var isLoading = false
+    @ObservationIgnored private var isLeavingForNewSearch = false
 
     init(
         query: String,
@@ -87,11 +100,21 @@ final class SearchResultsViewModel {
         navigator?.showProduct(id: id)
     }
 
-    /// Pushes a new results screen for the trimmed text, then puts this screen's field back to its own query,
-    /// so Back shows the search that produced these results. Blank text or this screen's own term does nothing.
+    /// Pushes a new results screen for the trimmed text and ends search mode, so this screen comes back normally.
+    /// The typed text stays until the screen appears again (`screenAppeared()`). Blank text or this screen's own term
+    /// does nothing.
     func didSubmitSearch() {
         guard canSearch else { return }
         navigator?.showSearchResults(query: trimmedSearchText)
+        isLeavingForNewSearch = true
+        isSearchActive = false
+        isLeavingForNewSearch = false
+    }
+
+    /// The screen appeared, first time or on Back: the field shows this screen's query, so Back shows the search that
+    /// produced these results. The system blanks the field's display when search mode ends after a submit without
+    /// telling the binding; this is a real change (typed text to query), so SwiftUI redraws the field.
+    func screenAppeared() {
         searchText = query
     }
 

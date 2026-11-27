@@ -118,27 +118,50 @@ struct SearchResultsViewModelTests {
 
     // MARK: - Searching again
 
-    @Test("A new term pushes results for the trimmed text, and the field goes back to this screen's query")
+    @Test("A new term pushes results for the trimmed text and ends search mode; coming back shows this screen's query")
     func newTermPushes() {
+        viewModel.isSearchActive = true
         viewModel.searchText = "  jacket \n"
         #expect(viewModel.canSearch)
 
         viewModel.didSubmitSearch()
 
         #expect(navigator.calls == [.searchResults(query: "jacket")])
+        #expect(!viewModel.isSearchActive)
+        #expect(viewModel.searchText == "  jacket \n") // until the screen appears again
+
+        viewModel.screenAppeared()
         #expect(viewModel.searchText == "ring")
     }
 
     @Test("A blank term, or this screen's own term ignoring case, does nothing", arguments: ["", "   ", "ring", " RING ", "Ring"])
     func blankOrSameTermDoesNothing(text: String) {
+        viewModel.isSearchActive = true
         viewModel.searchText = text
         #expect(!viewModel.canSearch)
         viewModel.didSubmitSearch()
+        #expect(navigator.calls.isEmpty)
+        #expect(viewModel.isSearchActive)
+        #expect(viewModel.searchText == text)
+    }
+
+    @Test("Ending search mode without a submit (Cancel, which clears the field) puts this screen's query back")
+    func cancelRestoresQuery() {
+        viewModel.isSearchActive = true
+        viewModel.searchText = "jack"
+        viewModel.searchText = ""
+        viewModel.isSearchActive = false
+        #expect(viewModel.searchText == "ring")
+
+        // The system clears the field again once search mode has ended; that is put back too.
+        viewModel.searchText = ""
+        #expect(viewModel.searchText == "ring")
         #expect(navigator.calls.isEmpty)
     }
 
     @Test("Curly quotes are submitted as straight ones, and count as the same term")
     func curlyQuotesAreStraightened() {
+        viewModel.isSearchActive = true
         viewModel.searchText = " men\u{2019}s "
         viewModel.didSubmitSearch()
         #expect(navigator.calls == [.searchResults(query: "men's")])
@@ -150,6 +173,7 @@ struct SearchResultsViewModelTests {
             navigator: navigator,
             locale: Locale(identifier: "en_US")
         )
+        sameTerm.isSearchActive = true
         sameTerm.searchText = "Men\u{2019}s"
         #expect(!sameTerm.canSearch)
     }

@@ -34,7 +34,8 @@ struct SearchResultsView: View {
         .background(theme.colors.background)
         .navigationTitle(viewModel.query)
         .navigationBarTitleDisplayMode(.inline)
-        .productSearchField(text: $viewModel.searchText, onSubmit: viewModel.didSubmitSearch)
+        .productSearchField(text: $viewModel.searchText, isPresented: $viewModel.isSearchActive, onSubmit: viewModel.didSubmitSearch)
+        .onAppear(perform: viewModel.screenAppeared)
         .task { await viewModel.load() }
     }
 }

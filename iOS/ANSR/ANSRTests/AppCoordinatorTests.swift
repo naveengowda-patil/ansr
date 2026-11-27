@@ -82,6 +82,7 @@ struct AppCoordinatorTests {
         }
         #expect(data.results.map(\.id) == [5])
 
+        viewModel.isSearchActive = true
         viewModel.searchText = "ring"
         viewModel.didSubmitSearch()
         #expect(coordinator.path == [.searchResults(query: "ring")])

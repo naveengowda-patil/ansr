@@ -181,12 +181,17 @@ struct HomeViewModelTests {
         #expect(navigator.calls == [.category(name: "men's clothing")])
     }
 
-    @Test("A search submit shows results for the trimmed term")
+    @Test("A search submit shows results for the trimmed term and clears the field; coming back ends search mode")
     func searchSubmitIsTrimmed() {
+        viewModel.isSearchActive = true
         viewModel.searchText = "  ring \n"
         #expect(viewModel.canSearch)
         viewModel.didSubmitSearch()
         #expect(navigator.calls == [.searchResults(query: "ring")])
+        #expect(viewModel.searchText.isEmpty)
+
+        viewModel.screenAppeared()
+        #expect(!viewModel.isSearchActive)
     }
 
     @Test("Curly quotes from the keyboard are submitted as straight ones")
@@ -198,9 +203,20 @@ struct HomeViewModelTests {
 
     @Test("A blank search does nothing", arguments: ["", "   ", "\n\t "])
     func blankSearchDoesNothing(text: String) {
+        viewModel.isSearchActive = true
         viewModel.searchText = text
         #expect(!viewModel.canSearch)
         viewModel.didSubmitSearch()
+        #expect(navigator.calls.isEmpty)
+        #expect(viewModel.isSearchActive)
+    }
+
+    @Test("Ending search mode without a submit leaves the field as typed: Home has no query to restore")
+    func endingSearchModeLeavesField() {
+        viewModel.isSearchActive = true
+        viewModel.searchText = "rin"
+        viewModel.isSearchActive = false
+        #expect(viewModel.searchText == "rin")
         #expect(navigator.calls.isEmpty)
     }
 }
