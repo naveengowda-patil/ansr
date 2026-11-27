@@ -4,7 +4,7 @@ A reader's guide to the iOS app: what each part does, where it lives, and how th
 
 > **The exact rules live in [`BLUEPRINT.md` §7](BLUEPRINT.md#7-ios-app), the single source of truth.** This guide explains and links to it. It doesn't define rules of its own. If the two ever disagree, the blueprint wins, and the mismatch should be raised.
 
-The app is a SwiftUI iPhone app (iOS 18) built as MVVM-C. Its only data source is our backend: products, categories, images and enquiries all go through it, never to Fake Store directly. File paths below follow the planned layout in [§7.2](BLUEPRINT.md#72-structure).
+The app is a SwiftUI iPhone app (iOS 18) built as MVVM-C. Its only data source is our backend: products, categories, images and enquiries all go through it, never to Fake Store directly. File paths below are the files as they are in the repository ([§7.2](BLUEPRINT.md#72-structure)).
 
 ```
  SceneDelegate ──▶ 1. Launch + configuration (AppBootstrapper → AppConfiguration, AppDependencies, AppCoordinator)
@@ -17,7 +17,7 @@ The app is a SwiftUI iPhone app (iOS 18) built as MVVM-C. Its only data source i
                                          └──▶ 5. Image provider ──────────┘ (memory → disk → network)
 
  2. Build setup and schemes: Debug / Prod xcconfig → Info.plist → AppConfiguration
- 8. Shared UI and theme: ViewState, StateContainerView, tiles, Strings, Formatters, AppTheme
+ 8. Shared UI and theme: ViewState, StateContainerView, tiles, the search field, Strings, Formatters, AppTheme
 ```
 
 The arrows only go one way. A layer talks only to the protocol of the layer below it, and only the composition root (section 1) knows the concrete types. Rules: [§7.3](BLUEPRINT.md#73-mvvm-c-layering-and-models).
@@ -32,7 +32,7 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
   - `ANSR/App/AppDelegate.swift`, `SceneDelegate.swift`, `AppBootstrapper.swift`
   - `ANSR/App/AppConfiguration.swift`, `AppDependencies.swift`, `ConfigurationErrorView.swift`
   - `ANSR/Info.plist`
-  - `ANSR/Mocks/` (`AppDependencies.mock`, for previews)
+  - `ANSR/Mocks/` (`MockData` and `MockRepositories`, which hold `AppDependencies.mock`, for previews only)
 - **Public API:**
   - `AppBootstrapper.configure()` returns `.ready(AppCoordinator)` or `.configurationError(message)`.
   - `AppConfiguration` has `apiBaseURL` and `requestTimeout`, built from the info dictionary. It throws when a value is missing or invalid.
@@ -164,7 +164,7 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
 
 - **Files:** `ANSR/Navigation/`
   - `AppCoordinator.swift` and `CoordinatorView.swift` (the stack and sheet shell)
-  - `Route.swift`, `Sheet.swift` and `Screen.swift` (what a route or the sheet builds, for tests)
+  - `Route.swift`, `Sheet.swift` and `Screen.swift` (`Screen` and `SheetScreen`: what a route or the sheet builds, so tests can check it)
   - the five navigator protocols, in `Navigating.swift`
 - **Public API:**
   - `AppCoordinator.rootView()`.
@@ -177,7 +177,7 @@ The arrows only go one way. A layer talks only to the protocol of the layer belo
 - **How it works:**
   - **The stack:** one `NavigationStack(path:)` rooted at Home, with `Route` values for Category, Search results and Product detail. One sheet holds the enquiry.
   - **Navigators:** each view model gets a small navigator protocol with only the moves it may make, held `weak`. `AppCoordinator` implements them all.
-  - **Thin entry points:** every protocol method only forwards to a private `push`, `present`, `dismissPresented` or `pop`.
+  - **Thin entry points:** every protocol method only forwards to a private `push`, `present`, `dismissPresented` or `pop(to:)`.
     - The path can only change inside the coordinator.
     - Back-swipe goes through a binding that calls the private `pop`.
   - **Search:** each search pushes a new results screen, so Back returns to the previous one.
@@ -201,11 +201,12 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
   - **Layout:**
     - a large title;
     - a search bar that is always visible;
-    - "Top rated": the 5 featured products in a horizontal row;
+    - "Top rated": the 5 featured products in a horizontal row, with no list cell around it;
     - "Categories": rows with chevrons.
+    - The list's own background is hidden, so the spinner, the error and the loaded list share the theme's background.
   - **Loading:** featured and categories load in parallel. If either fails, the whole screen shows the error with Retry.
-  - **Search:** submitting opens Search results with the trimmed text. Search does nothing while the text is blank.
-- **Tests:** `HomeViewModel`. It checks the featured tiles in order, category and tile taps, search submit, the blank-search guard, and error then Retry.
+  - **Search:** the shared search field (below). Submitting opens Search results with the trimmed text and clears Home's field. Home ends search mode when it appears again, so its large title comes back.
+- **Tests:** `HomeViewModel`. It checks the featured tiles in order, category and tile taps, search submit (trimmed text, field cleared, search mode ended on reappear), the blank-search guard, curly quotes, and error then Retry.
 - **Rules:**
   - [§7.8.1](BLUEPRINT.md#781-home)
   - [D-035](../DECISIONS.md), [D-036](../DECISIONS.md)
@@ -229,14 +230,38 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 
 - **Files:** `ANSR/Features/SearchResults/`
 - **How it works:**
-  - The search bar is prefilled with the query. Only the text term is sent.
+  - The title and the search field show the query. Only the text term is sent, for page 1 (20 products, which covers the catalogue).
   - A summary line ("{n} results for '{q}'") sits above a 2-column grid of exactly the returned products.
   - No matches shows an empty state that names the query. Any error shows the error with Retry.
   - Searching again pushes a new results screen, so Back returns to the previous results. Searching the same term again does nothing.
-- **Tests:** `SearchResultsViewModel`. It checks that only the term is sent, that only the results are shown, the summary and empty text, errors and Retry, and that a new search pushes while a blank or identical one doesn't.
+  - The field's rules for Cancel, the ✕ and Back are in "The search field" below.
+- **Tests:** `SearchResultsViewModel`. It checks that only the term is sent, that only the results are shown, the summary and empty text, errors and Retry, that a new search pushes and ends search mode while a blank or identical one doesn't, that Cancel puts the query back, that the ✕ clears in one tap (also right after a Cancel), and that the query is back in the field when the screen reappears.
 - **Rules:**
   - [§7.8.3](BLUEPRINT.md#783-search-results)
   - [D-037](../DECISIONS.md), [D-008](../DECISIONS.md)
+
+### The search field (Home and Search results)
+
+**One search field, shared by the two screens that search, so its rules can't drift apart.**
+
+- **Files:** `ANSR/Shared/ProductSearchField.swift` (`productSearchField(text:isPresented:onSubmit:)`) and `ANSR/Shared/SearchTerm.swift`
+- **How it works:**
+  - **Always visible** in the navigation bar, with the prompt "Search products", and no auto-capitalisation or autocorrection.
+  - **Search runs on the keyboard's Search key**, which is AC-3's "tap search" on iOS ([D-045](../DECISIONS.md)). Nothing is searched while typing. The key is disabled while the field is empty, and whitespace-only text does nothing.
+  - **Curly quotes:** the keyboard turns `men's` into `men’s`. `SearchTerm.normalized(_:)` trims the text and straightens the quotes before it's compared or sent.
+  - **Search mode belongs to the view model.** The field's `isPresented` is bound to the view model's `isSearchActive`, so a screen you come back to isn't still in search mode, with Cancel showing and its title hidden.
+    - Search results ends search mode when a search navigates.
+    - Home ends it when it appears again. Ending it while Home was covered left its large title collapsed.
+  - **On a results screen the field always shows that screen's query when it isn't being edited:**
+    - **Cancel** puts the query back. The system clears the field on Cancel, ends search mode, then clears it once more, so the view model puts back exactly that one extra clear ([D-044](../DECISIONS.md)).
+    - **The ✕** clears the field in one tap, in search mode or not.
+    - **After a search and Back,** the query is set again when the screen reappears.
+  - These rules follow the order in which the system writes to the field, which was logged at runtime rather than guessed. The blueprint lists it.
+- **Tests:** in the Home and Search results view model tests, which replay the logged write order.
+- **Rules:**
+  - [§7.8](BLUEPRINT.md#78-screens) (the field, and what the system does to it)
+  - [§7.8.3](BLUEPRINT.md#783-search-results) (Cancel, the ✕ and Back on a results screen)
+  - [D-044](../DECISIONS.md), [D-045](../DECISIONS.md), [D-037](../DECISIONS.md)
 
 ### Product detail
 
@@ -246,7 +271,7 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 - **How it works:**
   - The product is fetched by id.
   - The screen shows a large image, the title, price, rating, category and description.
-  - Enquire is pinned at the bottom, stays visible while scrolling, and opens the enquiry sheet once the product has loaded.
+  - Enquire is a full-width button pinned at the bottom. It stays visible while scrolling, and opens the enquiry sheet once the product has loaded.
   - A product that no longer exists shows the empty state. Any other failure shows the error with Retry.
 - **Tests:** `ProductDetailViewModel`. It checks the load by id, the mapping, 404 → empty, errors and Retry, a second load being ignored, and that Enquire opens the sheet only once loaded.
 - **Rules:**
@@ -283,20 +308,28 @@ Each screen is a dumb view and an `@Observable` view model. The view renders vie
 **The building blocks every screen uses, and the look and feel in one place.**
 
 - **Files:**
-  - `ANSR/Shared/`: `ViewState`, `StateContainerView`, `ProductTileView`, `Formatters` and `Strings`
+  - `ANSR/Shared/`:
+    - `ViewState` and `StateContainerView`;
+    - `ProductTileView`, `ProductTileViewData`, and `ProductTileRow` (which holds both the horizontal row and the 2-column grid);
+    - `ProductImageState` and `ProductImageLoader` (section 5);
+    - `ErrorMessages` (section 3), `Formatters` and `Strings`;
+    - `ProductSearchField` and `SearchTerm` (the search field, in section 7).
   - `ANSR/Theme/AppTheme.swift`
 - **How it works:**
   - **`ViewState`:** loading, loaded, empty or error. There's no idle state, because every screen loads when it appears.
     - `StateContainerView` shows a spinner, a message, or a message with Retry.
     - Loading starts when the screen appears and is cancelled when it's left.
     - Retry shows the spinner again, and a second load while one is running is ignored.
-  - **`ProductTileView`:** shows a tile's title, price, rating and image state.
+  - **`ProductTileView`:** shows a tile's title, price, rating and image state. `ProductTileRow` lays tiles out as a horizontal row (Home and Category "Top rated") and `ProductTileGrid` as a 2-column grid (Category "More in", Search results).
+    - **A row sizes its tiles from its own width,** so 2.3 tiles show and the next one peeks on every iPhone, from SE to Pro Max. A row that ended on a whole tile gave no hint that it scrolled. On Category the row runs to the screen edges; on Home it fills the section's width, lined up with the category rows.
   - **`Formatters`:** pure functions, with the locale passed in. Each turns a value into display text:
     - price with currency;
     - a rating like "4.5 ★ (120)";
     - category names, capitalised.
   - **`Strings`:** all user-facing text, in one file, with no translations.
   - **`AppTheme`:** colour, font, spacing and size tokens, injected once at the root. It uses system colours, so dark mode works.
+    - The page is the **grouped** background (grey, or black in dark mode) and cards on it are the grouped secondary background (white, or dark grey), so tiles and rows stand out in both modes. With the plain system colours, Home's tiles disappeared into the list cell around them in dark mode.
+    - Views never hardcode a colour, font or size; the phase 3.1 layout pass only changed token values and how views use them.
   - **Accessibility:** out of scope for the proof of concept.
 - **Tests:** formatting is checked through the view model tests (price and rating text on tiles and detail).
 - **Rules:**
