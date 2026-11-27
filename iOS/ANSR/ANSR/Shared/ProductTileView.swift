@@ -53,11 +53,16 @@ struct ProductTileView: View {
 
 #if DEBUG
 #Preview {
-    ProductTileView(
-        data: ProductTileViewData(id: 1, title: "Fjallraven - Foldsack No. 1 Backpack", priceText: "$109.95", ratingText: "3.9 ★ (120)"),
-        imageState: .failed,
-        onAppear: {}
+    ProductTileRow(
+        tiles: [
+            ProductTileViewData(id: 1, title: "Fjallraven - Foldsack No. 1 Backpack", priceText: "$109.95", ratingText: "3.9 ★ (120)"),
+            ProductTileViewData(id: 2, title: "Mens Casual Premium Slim Fit T-Shirts", priceText: "$22.30", ratingText: "4.1 ★ (259)"),
+            ProductTileViewData(id: 3, title: "Mens Cotton Jacket", priceText: "$55.99", ratingText: "4.7 ★ (500)"),
+        ],
+        edgeMargin: AppTheme.standard.spacing.large,
+        imageState: { _ in .failed },
+        tileAppeared: { _ in },
+        tileTapped: { _ in }
     )
-    .frame(width: AppTheme.standard.imageSizes.tileWidth)
 }
 #endif

@@ -1,9 +1,13 @@
 import SwiftUI
 
-/// A horizontal row of product tiles (BLUEPRINT §7.8.1 "Top rated", §7.8.2 "Top rated"). A dumb view: the screen
+/// A horizontal row of product tiles (BLUEPRINT §7.8.1 "Top rated", §7.8.2 "Top rated", §7.11). A dumb view: the screen
 /// passes the tiles, how to read each image state, and the intents.
+///
+/// Tiles are sized from the row's width so `rowVisibleTiles` of them show and the next one peeks, on every iPhone.
+/// `edgeMargin` insets the first and last tile while the row itself scrolls to its edges (Category runs it full width).
 struct ProductTileRow: View {
     let tiles: [ProductTileViewData]
+    var edgeMargin: CGFloat = 0
     let imageState: (Int) -> ProductImageState
     let tileAppeared: (Int) async -> Void
     let tileTapped: (Int) -> Void
@@ -15,11 +19,19 @@ struct ProductTileRow: View {
             LazyHStack(spacing: theme.spacing.medium) {
                 ForEach(tiles) { tile in
                     ProductTileButton(tile: tile, imageState: imageState, tileAppeared: tileAppeared, tileTapped: tileTapped)
-                        .frame(width: theme.imageSizes.tileWidth)
+                        .containerRelativeFrame(.horizontal) { width, _ in tileWidth(in: width) }
                 }
             }
             .padding(.vertical, theme.spacing.small)
         }
+        .contentMargins(.horizontal, edgeMargin, for: .scrollContent)
+    }
+
+    /// The width that fits `rowVisibleTiles` tiles, with the gaps between the whole ones, into the visible row.
+    private func tileWidth(in width: CGFloat) -> CGFloat {
+        let visible = theme.imageSizes.rowVisibleTiles
+        let gaps = visible.rounded(.down) * theme.spacing.medium
+        return max(0, (width - gaps) / visible)
     }
 }
 

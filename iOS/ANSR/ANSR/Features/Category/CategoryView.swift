@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The Category screen (BLUEPRINT §7.8.2): "Top rated" as a row, then "More in {Category}" as a 2-column grid.
-/// A dumb view: it renders `CategoryViewModel.state` and calls intents. Layout polish is phase 3.
+/// A dumb view: it renders `CategoryViewModel.state` and calls intents. The "Top rated" row scrolls to the screen edges
+/// (§7.11); the titles and the grid keep the page margin.
 struct CategoryView: View {
     @State private var viewModel: CategoryViewModel
     @Environment(\.theme) private var theme
@@ -22,6 +23,7 @@ struct CategoryView: View {
                         sectionTitle(Strings.categoryTopRated)
                         ProductTileRow(
                             tiles: data.topRated,
+                            edgeMargin: theme.spacing.large,
                             imageState: viewModel.imageState(for:),
                             tileAppeared: viewModel.tileAppeared(id:),
                             tileTapped: viewModel.didTapProduct(id:)
@@ -35,9 +37,10 @@ struct CategoryView: View {
                             tileAppeared: viewModel.tileAppeared(id:),
                             tileTapped: viewModel.didTapProduct(id:)
                         )
+                        .padding(.horizontal, theme.spacing.large)
                     }
                 }
-                .padding(theme.spacing.large)
+                .padding(.vertical, theme.spacing.large)
             }
         }
         .background(theme.colors.background)
@@ -50,6 +53,7 @@ struct CategoryView: View {
         Text(text)
             .font(theme.fonts.headline)
             .foregroundStyle(theme.colors.primaryText)
+            .padding(.horizontal, theme.spacing.large)
     }
 }
 

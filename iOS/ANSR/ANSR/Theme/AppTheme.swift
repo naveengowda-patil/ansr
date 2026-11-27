@@ -1,7 +1,9 @@
 import SwiftUI
 
 /// Every colour, font, spacing value, corner radius and image size the views use (BLUEPRINT §7.9, D-023).
-/// Colours are system semantic colours, so dark mode works. Injected once at the root through `\.theme`.
+/// Colours are system semantic colours, so dark mode works: the page is the grouped background and cards (tiles, list rows,
+/// the detail image) are the grouped secondary background, so they stand out in light and dark. Injected once at the root
+/// through `\.theme`.
 struct AppTheme: Sendable {
     struct Colors: Sendable {
         let background: Color
@@ -35,7 +37,8 @@ struct AppTheme: Sendable {
     }
 
     struct ImageSizes: Sendable {
-        let tileWidth: CGFloat
+        /// How many tiles a horizontal row shows across its width, so the next tile always peeks on every iPhone.
+        let rowVisibleTiles: CGFloat
         let tileImageHeight: CGFloat
         let detailImageHeight: CGFloat
     }
@@ -51,8 +54,8 @@ extension AppTheme {
     /// The app's one theme. Created by the composition root (`AppDependencies.live`) and used as the environment default.
     static let standard = AppTheme(
         colors: Colors(
-            background: Color(uiColor: .systemBackground),
-            secondaryBackground: Color(uiColor: .secondarySystemBackground),
+            background: Color(uiColor: .systemGroupedBackground),
+            secondaryBackground: Color(uiColor: .secondarySystemGroupedBackground),
             primaryText: Color(uiColor: .label),
             secondaryText: Color(uiColor: .secondaryLabel),
             accent: .accentColor,
@@ -68,7 +71,7 @@ extension AppTheme {
         ),
         spacing: Spacing(extraSmall: 4, small: 8, medium: 12, large: 16, extraLarge: 24),
         radii: Radii(tile: 12, image: 8),
-        imageSizes: ImageSizes(tileWidth: 150, tileImageHeight: 120, detailImageHeight: 280)
+        imageSizes: ImageSizes(rowVisibleTiles: 2.3, tileImageHeight: 120, detailImageHeight: 280)
     )
 }
 

@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The Product detail screen (BLUEPRINT §7.8.4): image, title, price, rating, category and description in a scroll view,
-/// with Enquire pinned at the bottom. A dumb view: it renders `ProductDetailViewModel.state` and calls intents.
-/// Layout polish is phase 3.
+/// with Enquire pinned at the bottom as a full-width button. A dumb view: it renders `ProductDetailViewModel.state` and
+/// calls intents.
 struct ProductDetailView: View {
     @State private var viewModel: ProductDetailViewModel
     @Environment(\.theme) private var theme
@@ -22,7 +22,7 @@ struct ProductDetailView: View {
                     image
                         .frame(maxWidth: .infinity)
                         .frame(height: theme.imageSizes.detailImageHeight)
-                        .background(theme.colors.placeholder)
+                        .background(theme.colors.secondaryBackground)
                         .clipShape(RoundedRectangle(cornerRadius: theme.radii.tile))
                         .task { await viewModel.imageAppeared() }
                     Text(product.title)
@@ -48,11 +48,14 @@ struct ProductDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
             if viewModel.canEnquire {
-                Button(Strings.productEnquire, action: viewModel.didTapEnquire)
-                    .font(theme.fonts.headline)
-                    .frame(maxWidth: .infinity)
-                    .buttonStyle(.borderedProminent)
-                    .padding(theme.spacing.large)
+                Button(action: viewModel.didTapEnquire) {
+                    Text(Strings.productEnquire)
+                        .font(theme.fonts.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(theme.spacing.large)
                     .background(theme.colors.background)
             }
         }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Search results screen (BLUEPRINT §7.8.3): the results line, then a 2-column grid of exactly the returned products.
-/// A dumb view: it renders `SearchResultsViewModel.state` and calls intents. Layout polish is phase 3.
+/// A dumb view: it renders `SearchResultsViewModel.state` and calls intents.
 struct SearchResultsView: View {
     @State private var viewModel: SearchResultsViewModel
     @Environment(\.theme) private var theme

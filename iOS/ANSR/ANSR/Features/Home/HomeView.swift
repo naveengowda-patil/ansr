@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Home (BLUEPRINT §7.8.1): the featured products, the categories and the search field.
-/// A dumb view: it renders `HomeViewModel.state` and calls intents. Layout polish is phase 3.
+/// A dumb view: it renders `HomeViewModel.state` and calls intents. The list shows the theme's background, so loading,
+/// error and loaded share one background, and the "Top rated" row sits on it with no cell around it (§7.11).
 struct HomeView: View {
     @State private var viewModel: HomeViewModel
     @Environment(\.theme) private var theme
@@ -30,6 +31,7 @@ struct HomeView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
         }
         .background(theme.colors.background)
         .navigationTitle(Strings.homeTitle)
@@ -46,7 +48,8 @@ struct HomeView: View {
             tileAppeared: viewModel.tileAppeared(id:),
             tileTapped: viewModel.didTapProduct(id:)
         )
-        .listRowInsets(EdgeInsets(top: 0, leading: theme.spacing.large, bottom: 0, trailing: theme.spacing.large))
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(Color.clear)
     }
 
     private func categoryRow(_ category: CategoryRowViewData) -> some View {
