@@ -39,7 +39,9 @@ const productsQuerySchema = z
     minRating: nonNegativeNumberParam.pipe(z.number().max(5, 'must be between 0 and 5')).optional(),
     sort: z.enum(SORT_OPTIONS).default('relevance'),
     page: positiveIntParam.default(1),
-    pageSize: positiveIntParam.pipe(z.number().max(MAX_PAGE_SIZE)).default(DEFAULT_PAGE_SIZE),
+    pageSize: positiveIntParam
+      .pipe(z.number().max(MAX_PAGE_SIZE, `must be between 1 and ${MAX_PAGE_SIZE}`))
+      .default(DEFAULT_PAGE_SIZE),
   })
   .refine((query) => query.minPrice === undefined || query.maxPrice === undefined || query.minPrice <= query.maxPrice, {
     message: 'must not be greater than maxPrice',

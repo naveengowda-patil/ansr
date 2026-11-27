@@ -122,6 +122,16 @@ describe('GET /products (AC-3, §6.4)', () => {
     expect(response.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('rejects pageSize over 50 with a message naming the range, rather than lowering it (D-046)', async () => {
+    const { app } = createTestApp({ products: catalogue });
+    const response = await request(app).get('/products').query({ pageSize: '51' });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: { code: 'VALIDATION_ERROR', message: 'pageSize: must be between 1 and 50' },
+    });
+  });
+
   it('logs search.executed at debug with the parsed query, total and duration (§5.11)', async () => {
     const ticks = [100, 130];
     const searchEngine = new InMemorySearchEngine({ capabilities: allCapabilities() });
