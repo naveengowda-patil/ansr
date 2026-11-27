@@ -1,0 +1,8 @@
+// Debug configuration (scheme "ANSR Debug"): talks to the local backend.
+// See docs/BLUEPRINT.md §7.7.
+//
+// Note: "//" starts a comment in xcconfig files, so URLs are written as "http:/$()/host".
+// The empty $() splits the slashes and disappears when the setting is resolved.
+
+API_BASE_URL = http:/$()/localhost:3000
+REQUEST_TIMEOUT_SECONDS = 15

@@ -7,7 +7,8 @@
 - If a requirement is unclear, ask me, record the answer in the blueprint, then build.
 - Never add or change endpoints, screens, dependencies or the API contract unless the blueprint says so, or I approve and the blueprint is updated in the same change.
 - Keep `DECISIONS.md` current with assumptions and trade-offs.
-- Keep `AI_USAGE.md` current with two things: (a) mistakes I correct (what was wrong, how it was caught), and (b) my prompts that significantly shaped the development or led to a major decision (the prompt, summarised, and the decision it led to).
+- Keep `docs/PROMPT_LOG.md` current with my prompts that significantly shaped the development or led to a major decision (the prompt, summarised, and the decision it led to).
+- Keep `AI_USAGE.md` current with mistakes I correct (what was wrong, how it was caught). Smaller corrections go under "Other corrections" in `docs/PROMPT_LOG.md`.
 
 ## Design principles
 - Respect the boundaries defined in the blueprint. Layers talk only through the interfaces or protocols it defines, and no layer skips another.

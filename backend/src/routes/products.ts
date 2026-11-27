@@ -32,14 +32,16 @@ const MAX_PAGE_SIZE = 50;
 /** GET /products query (blueprint §6.4). Shape only; engine support is checked separately. */
 const productsQuerySchema = z
   .strictObject({
-    q: z.string().trim().min(1, 'must not be blank').max(100).optional(),
+    q: z.string().trim().min(1, 'must not be blank').max(100, 'must be 100 characters or fewer').optional(),
     category: z.string().trim().min(1, 'must not be blank').max(100).optional(),
     minPrice: nonNegativeNumberParam.optional(),
     maxPrice: nonNegativeNumberParam.optional(),
     minRating: nonNegativeNumberParam.pipe(z.number().max(5, 'must be between 0 and 5')).optional(),
     sort: z.enum(SORT_OPTIONS).default('relevance'),
     page: positiveIntParam.default(1),
-    pageSize: positiveIntParam.pipe(z.number().max(MAX_PAGE_SIZE)).default(DEFAULT_PAGE_SIZE),
+    pageSize: positiveIntParam
+      .pipe(z.number().max(MAX_PAGE_SIZE, `must be between 1 and ${MAX_PAGE_SIZE}`))
+      .default(DEFAULT_PAGE_SIZE),
   })
   .refine((query) => query.minPrice === undefined || query.maxPrice === undefined || query.minPrice <= query.maxPrice, {
     message: 'must not be greater than maxPrice',

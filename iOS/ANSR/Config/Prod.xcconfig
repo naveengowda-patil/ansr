@@ -1,0 +1,8 @@
+// Prod configuration (scheme "ANSR Prod"): placeholder URL until a real HTTPS backend exists.
+// See docs/BLUEPRINT.md §7.7.
+//
+// Note: "//" starts a comment in xcconfig files, so URLs are written as "https:/$()/host".
+// The empty $() splits the slashes and disappears when the setting is resolved.
+
+API_BASE_URL = https:/$()/api.example.com
+REQUEST_TIMEOUT_SECONDS = 15
