@@ -21,7 +21,8 @@ NestJS felt too heavy for a proof of concept, and Laravel would add a PHP toolch
 - [`docs/FRONTEND_ARCHITECTURE.md`](docs/FRONTEND_ARCHITECTURE.md): a guide to the iOS app, part by part, linking to the blueprint
 - [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md): a quick reference for API callers
 - [`DECISIONS.md`](DECISIONS.md): why things are the way they are
-- [`AI_USAGE.md`](AI_USAGE.md): how AI was used, the key prompts, and what it got wrong
+- [`AI_USAGE.md`](AI_USAGE.md): how AI was used, the five key moments, and what it got wrong
+- [`docs/PROMPT_LOG.md`](docs/PROMPT_LOG.md): every prompt that shaped the work, with the decision it led to
 
 ## Prerequisites
 
