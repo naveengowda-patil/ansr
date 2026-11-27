@@ -122,6 +122,16 @@ describe('GET /products (AC-3, §6.4)', () => {
     expect(response.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('rejects q over 100 characters with a message naming the limit', async () => {
+    const { app } = createTestApp({ products: catalogue });
+    const response = await request(app).get('/products').query({ q: 'x'.repeat(101) });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: { code: 'VALIDATION_ERROR', message: 'q: must be 100 characters or fewer' },
+    });
+  });
+
   it('rejects pageSize over 50 with a message naming the range, rather than lowering it (D-046)', async () => {
     const { app } = createTestApp({ products: catalogue });
     const response = await request(app).get('/products').query({ pageSize: '51' });

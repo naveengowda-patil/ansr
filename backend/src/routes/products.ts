@@ -32,7 +32,7 @@ const MAX_PAGE_SIZE = 50;
 /** GET /products query (blueprint §6.4). Shape only; engine support is checked separately. */
 const productsQuerySchema = z
   .strictObject({
-    q: z.string().trim().min(1, 'must not be blank').max(100).optional(),
+    q: z.string().trim().min(1, 'must not be blank').max(100, 'must be 100 characters or fewer').optional(),
     category: z.string().trim().min(1, 'must not be blank').max(100).optional(),
     minPrice: nonNegativeNumberParam.optional(),
     maxPrice: nonNegativeNumberParam.optional(),
