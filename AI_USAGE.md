@@ -1,0 +1,40 @@
+# AI Usage
+
+Built with Claude Code (Claude Opus 5.5). This file shows my five most important prompts, how the AI was set up, and the AI's five most important mistakes. Every prompt and the smaller corrections are in the [prompt log](docs/PROMPT_LOG.md).
+
+## Key moments
+
+The five prompts that shaped the solution most.
+
+1. **Every boundary is swappable, and the app only talks to our backend** ([P-1](docs/PROMPT_LOG.md#p-1), [D-001](DECISIONS.md#d-001--the-app-reaches-product-data-only-through-our-backend-images-included)). The brief says the data source, the email provider and the look and feel will all change, so each sits behind its own interface, and the app never calls Fake Store directly, not even for images. That one rule gave us the image proxy with its safety checks, and the app's own image cache.
+2. **Rules in `CLAUDE.md`, the design in one blueprint** ([P-5](docs/PROMPT_LOG.md#p-5), [D-015](DECISIONS.md#d-015--claudemd-holds-rules-only-the-blueprint-holds-everything-project-specific)). `CLAUDE.md` holds rules about how to work, and `docs/BLUEPRINT.md` holds what to build. Every change went into the blueprint first, then the code, which is why the code and the docs still match after 29 versions.
+3. **"Top rated" is a business choice** ([P-3](docs/PROMPT_LOG.md#p-3), [D-002](DECISIONS.md#d-002--home-top-rated-is-a-configured-ordered-list), [D-004](DECISIONS.md#d-004--category-view--3-top-rated-then-the-rest)). The criterion says "I have chosen 5 products", so it's an ordered list of ids in config, topped up by rating if an id is missing. A category shows its 3 highest rated, then the rest. This was the main gap in the criteria, and it was settled before any code.
+4. **Search as a swappable engine** ([P-6](docs/PROMPT_LOG.md#p-6), [P-11](docs/PROMPT_LOG.md#p-11), [D-008](DECISIONS.md#d-008--search-is-a-swappable-engine-behind-a-capability-contract)). Where the products live is separate from how they're searched. An engine declares what it supports, and anything it doesn't gets a 400 naming it, never a silently wrong result, so a real search service can plug in without touching the app.
+5. **MVVM-C with one small navigator per screen** ([P-2](docs/PROMPT_LOG.md#p-2), [P-16](docs/PROMPT_LOG.md#p-16), [D-026](DECISIONS.md#d-026--mvvm-c-with-a-single-coordinator), [D-032](DECISIONS.md#d-032--one-navigator-protocol-per-view-model-thin-coordinator-entry-points)). One coordinator builds every screen, each view model gets a protocol listing only the moves it's allowed to make, and views only display state. That's what made every screen testable without UI tests.
+
+## Tools and models used
+
+- **Claude Code** (Claude desktop app, Code tab) with **Claude Opus 5.5** (`claude-opus-5-5`), for clarifying requirements, drafting the blueprint and decisions, implementation, tests and commits.
+- I reviewed every change. Pushing, opening PRs and merging happened only on my go-ahead.
+
+## Agent instruction files
+
+- [`CLAUDE.md`](CLAUDE.md), committed in the repo, holds the rules for *how* to work: the source-of-truth process, design principles, code quality, security, UI, testing and git.
+- It holds rules only. An earlier version mixed in architecture, so every design change would have meant editing the agent's instructions; the design lives in the blueprint instead.
+
+## Plan / spec
+
+- [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) is the plan and spec, and the single source of truth: requirements, architecture, the API contract, the iOS design, config, tests and the delivery flow. Every change went into it first, then the code, and its changelog shows how the design evolved (v0.1 → v0.29).
+- [`DECISIONS.md`](DECISIONS.md) records why: each assumption and trade-off, linked to the blueprint section it shapes.
+
+## Where the AI got something wrong and how it was caught
+
+The five that mattered most. Smaller corrections are under [Other corrections](docs/PROMPT_LOG.md#other-corrections) in the prompt log.
+
+| # | What went wrong | How I caught it | What changed | Lesson |
+|---|---|---|---|---|
+| <a id="w-4"></a>W-4 | **The explanation didn't match the code.** The AI said a failing email send returns a 502 within milliseconds, but no SMTP timeouts were set, so nodemailer's defaults applied (2 minutes to connect, 10 minutes idle). A hanging mail server could hold an enquiry for minutes. | I checked the explanation against `container.ts`. | `SMTP_TIMEOUT_MS` (10 s) on the connection, greeting and socket, with a test against a silent local server ([D-010](DECISIONS.md#d-010--enquiry-rules)). | An explanation of behaviour is a claim to check against the code. |
+| <a id="w-3"></a>W-3 | **Search was over-enabled.** I wanted the contract ready for a future engine with filters and sorts. The AI recommended the in-memory engine support them all too, that went into my prompt ([P-7](docs/PROMPT_LOG.md#p-7)), and the running app ended up with every filter and sort switched on, beyond AC-3. | I reviewed the search engine against what I'd intended. | The running app does text search only, with capabilities always explicit. The extra filters and sorts are kept, tested but off, and each returns a 400 with a warning ([D-008](DECISIONS.md#d-008--search-is-a-swappable-engine-behind-a-capability-contract)). | Check the AI's recommendations against my intent before they go into a prompt. |
+| <a id="w-2"></a>W-2 | **Slow responses during an outage.** After the cache expired, every request retried Fake Store and waited the full 5 s timeout before getting the stale copy. The tests checked what came back, not how long it took. | I reviewed the cache's behaviour. | A retry back-off (`CACHE_RETRY_BACKOFF_SECONDS`), with tests that no upstream call happens inside it ([D-011](DECISIONS.md#d-011--how-the-cache-works-stale-while-revalidate-with-back-off-and-a-24-h-cap)). | Test how often a dependency is called, not just what is returned. |
+| <a id="w-6"></a>W-6 | **A fix swallowed another control's input.** To make Cancel restore a results screen's query, the AI put back every write to the field while search mode was off. The ✕ outside search mode writes too, before search mode starts, so it needed two taps to clear. The tests only drove Cancel and typing. | I tapped the ✕ while testing phase 2.6. | After a Cancel, only the system's one extra clear is put back, with tests for the ✕ ([D-044](DECISIONS.md#d-044--after-cancel-put-back-exactly-one-more-system-clear)). | A rule that filters input has to be checked against every control that sends it. |
+| <a id="w-5"></a>W-5 | **A timing-based test.** The AI's end-to-end logging test slept for real (over a second per test) to let a cache expire, which could turn flaky in CI. It noted the slowdown and shipped it anyway. | I reviewed the test suite. | The container takes an injected clock and exposes `whenIdle()`; the test moves the clock and awaits the work, with no sleeps. | If a test needs to wait, inject the clock or await the work. Never sleep. |

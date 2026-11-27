@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Read only by AppConfiguration. Values come from Config/Debug.xcconfig and Config/Prod.xcconfig (BLUEPRINT §7.1, §7.7). -->
+	<key>API_BASE_URL</key>
+	<string>$(API_BASE_URL)</string>
+	<key>REQUEST_TIMEOUT_SECONDS</key>
+	<string>$(REQUEST_TIMEOUT_SECONDS)</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default Configuration</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<!-- Debug only: the build preprocesses this file, and only the Debug configuration defines
+	     ANSR_ALLOW_LOCAL_NETWORKING. The #if lines sit inside XML comments so the file stays a valid plist. -->
+	<!--
+#if ANSR_ALLOW_LOCAL_NETWORKING
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!--
+#endif
+	-->
+</dict>
+</plist>
