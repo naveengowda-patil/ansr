@@ -9,7 +9,7 @@ A proof of concept for a product catalogue: a SwiftUI iOS app and a Node.js + Ty
   - **Node.js:** the backend mostly waits on other services (Fake Store, the image proxy, email), which Node's non-blocking I/O handles well.
   - **TypeScript** in strict mode, with `zod` at the boundaries, catches contract mistakes at compile time and rejects bad input at run time.
   - **Express** is small and easy to read, with middleware for validation and one error handler.
-  - It ships as one small container that runs on ECS, App Runner or Lambda.
+  - It ships as one small container that runs on ECS Fargate or App Runner (or on Lambda with an adapter, since Express expects a long-running server).
 - **Mailpit** catches emails locally, so nothing needs an account or costs money.
 
 NestJS felt too heavy for a proof of concept, and Laravel would add a PHP toolchain for the reviewer. The full reasoning is in [D-025](DECISIONS.md#d-025--stack-choice).

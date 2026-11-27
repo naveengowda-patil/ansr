@@ -56,7 +56,7 @@ struct ProductDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .padding(theme.spacing.large)
-                    .background(theme.colors.background)
+                .background(theme.colors.background)
             }
         }
         .task { await viewModel.load() }

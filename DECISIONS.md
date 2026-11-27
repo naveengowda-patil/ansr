@@ -271,7 +271,7 @@ One line per gap in the acceptance criteria ([blueprint §2](docs/BLUEPRINT.md#2
   - **Node.js:** the backend mostly waits on other services (Fake Store, the image proxy, email), which Node's non-blocking I/O handles well.
   - **TypeScript:** strict mode catches contract mistakes at compile time.
   - **Express:** minimal and easy to read, with middleware for validation and a single error handler.
-  - **Deployment:** a small container that runs on ECS, App Runner or Lambda.
+  - **Deployment:** a small container that runs on ECS Fargate or App Runner. Lambda would need an adapter, because Express expects a long-running server.
 - **Alternatives considered:**
   - NestJS felt too heavy for a PoC.
   - Laravel would add a PHP toolchain for the reviewer.
