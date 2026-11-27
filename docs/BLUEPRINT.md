@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v0.27, backend implemented, every iOS screen built: Home, Category, Search results, Product detail and the Enquiry sheet, with the search field fixes (phase 2.6 and its follow-up) |
+| Status | v0.28, backend implemented, every iOS screen built, polished and documented for submission (phase 3.1) |
 | Last updated | 2026-11-27 |
 | Rules | [`CLAUDE.md`](../CLAUDE.md) (how to write code) |
 | Decisions log | [`DECISIONS.md`](../DECISIONS.md) (why) |
@@ -482,7 +482,7 @@ Liveness only; does not call upstream services (so an upstream outage doesn't ge
 | `minRating` | number 0–5 | `rating.rate ≥ minRating` | additional: 400 |
 | `sort` | `relevance` \| `rating_desc` \| `price_asc` \| `price_desc` \| `title_asc` (default `relevance`) | result order | `relevance` ✅; others additional: 400 |
 | `page` | integer ≥ 1 (default 1) | | ✅ always |
-| `pageSize` | integer 1–50 (default 20) | | ✅ always |
+| `pageSize` | integer 1–50 (default 20); over 50 → 400 `pageSize: must be between 1 and 50`, never lowered to 50 (D-046) | | ✅ always |
 
 "Additional" means built and unit-tested, but not enabled in the running app (§5.7, D-008). The full contract and its shape validation stay in place, so enabling a capability needs no API change.
 
@@ -903,7 +903,7 @@ Every screen except Enquiry uses the states and loading rules in §7.11. Any err
 
 **The search field** is the same on Home and Search results:
 - It is always visible: `.searchable(text:placement: .navigationBarDrawer(displayMode: .always))`, with the prompt "Search products". The text lives in the view model.
-- It submits with `.onSubmit(of: .search)` and passes the trimmed text.
+- It submits with `.onSubmit(of: .search)` and passes the trimmed text. **AC-3's "tap search" is the keyboard's Search key** (D-045): `.searchable` gives the keyboard a Search key, so there is no separate search button.
 - **No auto-capitalisation and no autocorrection** (`.textInputAutocapitalization(.never)`, `.autocorrectionDisabled()`), so "ring" stays "ring". The keyboard's "." shortcut (two spaces type a full stop) is a system keyboard setting that still applies with autocorrection off, so it is left alone: "ring" followed by two spaces is sent as `ring.`.
 - Home and Search results share it as one modifier, `productSearchField(text:isPresented:onSubmit:)` in `Shared/`, so the rules can't drift between the two.
 - **Search mode is driven by the view model.** The modifier passes `isPresented` to `.searchable`, bound to the view model's `isSearchActive`. A search that navigates ends search mode, so coming back with Back shows the screen normally: its title, its Back button, and no Cancel. Without this, the screen came back still in search mode, with Cancel showing and the title hidden. Found in the phase 2.5 walkthrough.
@@ -934,6 +934,7 @@ Layout: D-035.
   - The row shows the name capitalised.
   - A tap opens the category by its name as the data spells it.
 - **No "all products" section.**
+- **Background:** the list's own background is hidden, so the theme's `background` shows behind every state: the spinner, the error and the loaded list look like one screen.
 - **Loading:**
   - `featured()` and `categories()` run in parallel. The screen is loaded once both succeed.
   - **If either fails, the whole screen shows the error with Retry** (D-036). There are no partial results.
@@ -970,11 +971,11 @@ Layout: D-035.
 - **Fetching:** the product is fetched by id (D-012). Loading follows §7.11, like the other screens: coming back from the sheet or a later screen doesn't reload.
 - **View data:** `ProductDetailViewData { id, title, priceText, ratingText, categoryText, description }`, mapped by a pure function with the same formatters as the tiles (§7.9).
 - **Layout,** in a scroll view:
-  - a large image (§7.6), with the placeholder, image and "failed" states. It is requested through `ImageProvider`, from the same cache as the tiles, when the loaded content appears, like a tile. So a product that 404s never asks for its image, and Retry needs no special image handling;
+  - a large image (§7.6) on a `secondaryBackground` card, with the placeholder, image and "failed" states. It is requested through `ImageProvider`, from the same cache as the tiles, when the loaded content appears, like a tile. So a product that 404s never asks for its image, and Retry needs no special image handling;
   - title, price and rating;
   - category, capitalised;
   - description.
-- **"Enquire"** is pinned at the bottom (a bottom safe-area inset), so it stays visible while the description scrolls, and shows only in the loaded state. It calls `showEnquiry(productId:productTitle:)` with the loaded product's id and title. Before the product has loaded, the intent does nothing.
+- **"Enquire"** is a full-width, large prominent button pinned at the bottom (a bottom safe-area inset), so it stays visible while the description scrolls, and shows only in the loaded state. It calls `showEnquiry(productId:productTitle:)` with the loaded product's id and title. Before the product has loaded, the intent does nothing.
 - **404** shows the empty state "This product is no longer available." (D-024). Any other error shows the error state with Retry.
 
 #### 7.8.5 Enquiry sheet
@@ -1027,6 +1028,7 @@ Layout: D-035.
 
 - **`AppTheme`** holds every colour, font, spacing value, corner radius and image size as tokens.
   - Colours are **system semantic colours** (background, secondary background, primary and secondary text, accent, placeholder, and `error` for the enquiry form's messages), so dark mode works.
+    - `background` is the **grouped** system background and `secondaryBackground` the grouped secondary background: the page is grey (black in dark mode), and cards on it (tiles, Home's category rows, the detail image) are white (dark grey). Set in phase 3.1: with the plain system colours, Home's tiles were the same colour as the list cell around them in dark mode, and Home's spinner and error showed white while the loaded list was grey.
   - Fonts are system text styles.
   - The theme is a value injected once at the root through a SwiftUI environment key, from `AppDependencies` (D-023).
   - No hardcoded colours, fonts or spacing in views.
@@ -1092,6 +1094,8 @@ enum ViewState<Value> {
   - **A second `load()` while one is running is ignored.** So is a `load()` once the screen is loaded or empty, which means going Back to Home doesn't reload it. A load that was cancelled before it finished runs again on the next appearance.
   - **`retry()`** sets `.loading`, so the spinner shows again, and then loads.
 - **`ProductTileView`** renders `ProductTileViewData` and an image state (placeholder, image, or "failed" icon). It reports its appearance so the view model can load the image (§7.6).
+- **Horizontal rows** (`ProductTileRow`, Home's and Category's "Top rated") size their tiles from the row's width, so `rowVisibleTiles` (2.3) tiles show and the next one peeks on every iPhone, from SE to Pro Max: a row that ends on a whole tile gives no hint that it scrolls. On Category the row scrolls to the screen edges, with the page margin before the first tile; on Home it fills the section's width with no list cell around it, lined up with the category rows below. Set in phase 3.1, replacing a fixed tile width.
+- **Grids** (`ProductTileGrid`) are 2 flexible columns with the page margin.
 - **`ConfigurationErrorView`** shows a fixed title and the bootstrapper's message naming the bad key, with no Retry, because configuration is fixed at build time.
 
 ---
@@ -1122,8 +1126,10 @@ docker compose up --build
 
 **iOS app**, with the backend running:
 1. Open `iOS/ANSR/ANSR.xcodeproj`.
-2. Choose the **`ANSR Debug`** scheme and an iPhone simulator (iOS 18+).
-3. Run (⌘R). Debug already points at `http://localhost:3000`.
+2. Choose the **`ANSR Debug`** scheme and an iPhone simulator with iOS 18 or newer. It was developed and tested on **iPhone 16, iOS 18.2**.
+3. Run (⌘R). Debug already points at `http://localhost:3000`. There are no packages to fetch and no signing team to set, so the first build is the only wait.
+
+**Timed from a fresh clone** (phase 3.1, Apple M2, 8 GB, with Docker, Xcode and an iOS 18.2 simulator already installed): `docker compose up --build` with no build cache, 21 s until `/health` answers; the first Xcode build into empty DerivedData, 15 s; the first launch, products on Home in about 2 s and every image in about 5 s. The README lists them. A first-ever run also downloads the two base images, `node:24-alpine` and `axllent/mailpit` (about 77 MB together, on top of the times above). The whole run stays well under the 10-minute target (§3).
 
 The **`ANSR Prod`** scheme uses the placeholder `https://api.example.com` and allows HTTPS only, so it can't reach the local backend. Until a real environment exists it shows Home's error state (§7.7).
 
@@ -1146,6 +1152,7 @@ The **`ANSR Prod`** scheme uses the placeholder `https://api.example.com` and al
 
 The root `README.md` (written in the backend PR, completed in the iOS PR) covers:
 - What the project is, with links to this blueprint, `DECISIONS.md` and `AI_USAGE.md`.
+- **Why this stack:** SwiftUI on iOS, Node.js + TypeScript + Express on the backend, and why, in a few lines (D-025).
 - **Prerequisites:**
   - Docker with Compose 2.24 or newer.
   - **Xcode 16 or newer**, which is required for the iOS 18 deployment target and the synchronized-folder project format.
@@ -1154,7 +1161,7 @@ The root `README.md` (written in the backend PR, completed in the iOS PR) covers
 - **Quick start:** the one command in §8.2 (`.env` optional, for overrides only), and where to see the enquiry email (Mailpit at http://localhost:8025).
 - **Running tests:**
   - backend: `cd backend && npm ci && npm test` (Node 24), or with Docker only: `docker build --target test backend`
-  - iOS: ⌘U in Xcode with the `ANSR Debug` scheme, or `xcodebuild test -project iOS/ANSR/ANSR.xcodeproj -scheme "ANSR Debug" -destination 'platform=iOS Simulator,name=<an iPhone simulator>'`
+  - iOS: ⌘U in Xcode with the `ANSR Debug` scheme, or `xcodebuild test -project iOS/ANSR/ANSR.xcodeproj -scheme "ANSR Debug" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2'`, with a note that both `name` and `OS` must match an installed simulator (`xcrun simctl list devices available`): without `OS`, xcodebuild looks only at the newest iOS runtime, which may not have that iPhone (found in the phase 3.1 fresh-clone run).
 - Configuration: a pointer to `.env.example` and §5.10.
 - Troubleshooting: ports 3000, 8025 or 1025 already in use; the simulator can't reach the backend because the API isn't running or the `ANSR Prod` scheme is selected.
 
@@ -1171,7 +1178,7 @@ Tests never sleep. Time moves through an injected fake clock, and background wor
 | Area | How | Must cover |
 |---|---|---|
 | Domain | Unit tests on pure functions | ranking tie-break; `selectFeatured` (order kept, missing skipped, duplicates dropped, fill to 5, never >5, catalogue <5); `splitTopRated` (top 3, rest in upstream order, no duplicates, ≤3 products); `matchesText` (case-insensitive, title, description or category, phrase); `matchesFilters` (each filter, inclusive bounds, AND); `compareForSort` (each sort, tie-breaks); `findUnsupported`; `buildEnquiryEmail` (plain text, reply-to, subject CR/LF stripped) |
-| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
+| Routes | Supertest against `createApp` with in-memory fakes of the ports | every endpoint's happy path and documented errors; error envelope shape; unknown fields/params → 400; `pageSize=51` → 400 with `pageSize: must be between 1 and 50`; CR/LF in `name`/`email` → 400; present-but-empty `GET /products` params (`category`, `minPrice`, `sort`, `page`) → 400; SVG image → 502; unknown route → 404; upstream failure → 502; email failure → 502; no stack traces in bodies; image response headers (`Content-Type`, `Cache-Control`, `nosniff`) |
 | Search plug-and-play | Supertest + mock `Logger` | The **default `InMemorySearchEngine` (text search only)**: `category`, `minPrice`, `maxPrice`, `minRating` and each non-relevance sort → 400 naming it, with a warning logged (`param`, `value`, engine name); `q`, `sort=relevance` and paging work. A **fake engine supporting everything receives the exact parsed `SearchQuery`**, and the response items follow its id order and total. With `allCapabilities()`, the real engine serves `category` + sort through the route. |
 | `InMemorySearchEngine` | Unit | default = `textSearchOnly()`; with `allCapabilities()`: each filter and sort (additional, not enabled in the running app), category filter case-insensitive, combined filters; paging and total; relevance = upstream order; searches the latest snapshot after re-indexing |
 | Categories route | Supertest | `/categories/JEWELERY` matches and returns `jewelery` as the data spells it; unknown → 404 |
@@ -1266,6 +1273,7 @@ None open.
 ## 12. Future (not in scope)
 
 - **Tuist for the iOS project:** generate the project from a Swift manifest, so there are no `.xcodeproj` merge conflicts, and split it into modules (`Core`, `Networking`, `DesignSystem`, `Features`).
+- **"Load more" on iOS search results:** the app asks for page 1 only (20 products), which covers the 20-product catalogue (D-024). With a bigger catalogue, the results grid loads the next page as the user reaches the end, using the `page` and `total` the API already returns.
 - **Cursor-based paging for search:** today paging is offset-based (`page`, `pageSize`), so items can shift between pages if the catalogue refreshes mid-browse. A cursor (for example, the last item's sort key and id) keeps pages stable.
 - **iOS, recorded but not built** (D-030, D-035, D-036):
   - **Deep links**, mapped to `Route` values by the coordinator.
@@ -1309,3 +1317,4 @@ None open.
 | 0.25 | 2026-11-26 | iOS phase 2.5, the Enquiry sheet. §7.8.5 rewritten in detail: the sheet's layout and keyboard, validation as pure functions mirroring §6.9 exactly (control characters checked before trimming, lengths in code points as zod counts them, the backend's email pattern), field errors only once a field is edited, `EnquiryFormState` with Cancel, Done, blocked dismissal while submitting, the error above the form until the next submit, and `.cancelled` back to `editing`. §7.4: `sheetScreen(for:) -> SheetScreen`. §7.5: `ErrorMessages.message(for:notFoundMessage:)`, so the sheet's 404 reads "This product is no longer available.". §7.3: the sheet has no view data. §7.8: every screen is built and `RoutePlaceholderView` is gone. §7.9: an `error` colour token (system red) for the form's messages. §9.2 updated. D-038 updated. |
 | 0.26 | 2026-11-27 | iOS phase 2.6, two search field fixes found while testing. §7.8: search mode is driven by the view model's `isSearchActive` through `productSearchField(text:isPresented:onSubmit:)`, so a screen you come back to isn't still in search mode: Search results ends it at submit, Home when it appears again (ending it while covered left Home's large title collapsed). How the system treats the field on Cancel and on ending search mode, checked at runtime. §7.8.3: Cancel puts the screen's query back, writes while search mode is off go back to the query, and the query is set again when the screen reappears. §9.2 updated. (The three phase 2.5 blueprint commits all said v0.25; this is the next version.) |
 | 0.27 | 2026-11-27 | iOS phase 2.6 follow-up, a side effect of the Cancel fix found while testing: on a results screen not in search mode, the ✕ in the field needed two taps to clear it, because every write while search mode was off went back to the query. §7.8: the order of the system's writes for the ✕, Cancel, tapping into the field, a submit and Back, logged at runtime. §7.8.3: that blanket rule is replaced; after a Cancel only the system's one extra `""` is put back, other writes are kept, and no time delays are used (D-044). §9.2 updated. |
+| 0.28 | 2026-11-27 | iOS phase 3.1, polish and submission docs, no new behaviour. §6.4: `pageSize` over 50 gets the message `pageSize: must be between 1 and 50` and is never lowered (D-046); §9.1 test. §7.8: AC-3's "tap search" is the keyboard's Search key (D-045). §7.9: `background` and `secondaryBackground` are the grouped system colours, so tiles stand out in dark mode and Home's states share one background. §7.11: horizontal rows size tiles to show 2.3 so the next one peeks (`rowVisibleTiles` replaces the fixed tile width), and Category's row runs to the screen edges. §7.8.1: Home's list background hidden. §7.8.4: Enquire full width, the image on a card. §8.2 and §8.4: the README's "why this stack", real iOS steps, the `xcodebuild test` command with `OS=` (without it xcodebuild only looks at the newest runtime, found in the fresh-clone run), and the fresh-clone times. §12: "load more" on iOS search results. `.env.example`'s first comment no longer says to copy it. |
