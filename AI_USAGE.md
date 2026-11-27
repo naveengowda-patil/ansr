@@ -1,6 +1,6 @@
 # AI Usage
 
-Built with Claude Code (Claude Opus 5.5). This file shows my five most important prompts and the AI's five most important mistakes. Every prompt, the tools and setup, and the smaller corrections are in the [prompt log](docs/PROMPT_LOG.md).
+Built with Claude Code (Claude Opus 5.5). This file shows my five most important prompts, how the AI was set up, and the AI's five most important mistakes. Every prompt and the smaller corrections are in the [prompt log](docs/PROMPT_LOG.md).
 
 ## Key moments
 
@@ -11,6 +11,21 @@ The five prompts that shaped the solution most.
 3. **"Top rated" is a business choice** ([P-3](docs/PROMPT_LOG.md#p-3), [D-002](DECISIONS.md#d-002--home-top-rated-is-a-configured-ordered-list), [D-004](DECISIONS.md#d-004--category-view--3-top-rated-then-the-rest)). The criterion says "I have chosen 5 products", so it's an ordered list of ids in config, topped up by rating if an id is missing. A category shows its 3 highest rated, then the rest. This was the main gap in the criteria, and it was settled before any code.
 4. **Search as a swappable engine** ([P-6](docs/PROMPT_LOG.md#p-6), [P-11](docs/PROMPT_LOG.md#p-11), [D-008](DECISIONS.md#d-008--search-is-a-swappable-engine-behind-a-capability-contract)). Where the products live is separate from how they're searched. An engine declares what it supports, and anything it doesn't gets a 400 naming it, never a silently wrong result, so a real search service can plug in without touching the app.
 5. **MVVM-C with one small navigator per screen** ([P-2](docs/PROMPT_LOG.md#p-2), [P-16](docs/PROMPT_LOG.md#p-16), [D-026](DECISIONS.md#d-026--mvvm-c-with-a-single-coordinator), [D-032](DECISIONS.md#d-032--one-navigator-protocol-per-view-model-thin-coordinator-entry-points)). One coordinator builds every screen, each view model gets a protocol listing only the moves it's allowed to make, and views only display state. That's what made every screen testable without UI tests.
+
+## Tools and models used
+
+- **Claude Code** (Claude desktop app, Code tab) with **Claude Opus 5.5** (`claude-opus-5-5`), for clarifying requirements, drafting the blueprint and decisions, implementation, tests and commits.
+- I reviewed every change. Pushing, opening PRs and merging happened only on my go-ahead.
+
+## Agent instruction files
+
+- [`CLAUDE.md`](CLAUDE.md), committed in the repo, holds the rules for *how* to work: the source-of-truth process, design principles, code quality, security, UI, testing and git.
+- It holds rules only. An earlier version mixed in architecture, so every design change would have meant editing the agent's instructions; the design lives in the blueprint instead.
+
+## Plan / spec
+
+- [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) is the plan and spec, and the single source of truth: requirements, architecture, the API contract, the iOS design, config, tests and the delivery flow. Every change went into it first, then the code, and its changelog shows how the design evolved (v0.1 → v0.29).
+- [`DECISIONS.md`](DECISIONS.md) records why: each assumption and trade-off, linked to the blueprint section it shapes.
 
 ## Where the AI got something wrong and how it was caught
 

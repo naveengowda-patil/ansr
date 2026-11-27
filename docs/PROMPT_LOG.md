@@ -1,26 +1,6 @@
 # Prompt log
 
-Every prompt that significantly shaped development or led to a major decision, summarised, with the decision it led to. The five that mattered most are the [key moments in `AI_USAGE.md`](../AI_USAGE.md#key-moments); this is the full log. New prompts are added at the bottom of the table.
-
-## Tools and models used
-
-| Tool | Model | Used for |
-|---|---|---|
-| Claude Code (Claude desktop app, Code tab) | Claude Opus 5.5 (`claude-opus-5-5`) | Requirement clarification, blueprint and decision log drafting, implementation, tests, commits |
-
-All AI output is reviewed by the developer before it is merged. Pushing, opening PRs and merging happen only on the developer's explicit go-ahead.
-
-## Agent instruction files
-
-- **[`CLAUDE.md`](../CLAUDE.md)** — rules for *how* to work: source-of-truth process, design principles, code quality, security, UI, testing, git.
-  - **Why rules only:** an earlier version mixed rules with architecture (file paths, interface names, screen details). Every design change would have meant editing the agent's instructions, and the two documents would drift apart. Keeping `CLAUDE.md` stack-agnostic means it stays stable, and the design lives in one place.
-
-## Plan / spec
-
-- **[`docs/BLUEPRINT.md`](BLUEPRINT.md)** is the plan and spec, and the single source of truth. It holds requirements, architecture, the API contract, iOS design, config, test coverage and the delivery flow.
-  - Every change starts as a blueprint edit, and code follows.
-  - Its open questions and changelog show how the design evolved.
-- **[`DECISIONS.md`](../DECISIONS.md)** records why: assumptions and trade-offs, each linked to the blueprint section it shapes.
+Every prompt that significantly shaped development or led to a major decision, summarised, with the decision it led to. The five that mattered most are the [key moments in `AI_USAGE.md`](../AI_USAGE.md#key-moments), which also covers the tools, the agent instruction files and the plan; this is the full log. New prompts are added at the bottom of the table.
 
 ## Prompts
 
@@ -53,6 +33,7 @@ All AI output is reviewed by the developer before it is merged. Pushing, opening
 | <a id="p-25"></a>P-25 | 2026-11-27 | **iOS phase 3.1, polish and submission docs, no new behaviour.** Gaps found by going back through the original brief: (1) README: a "why this stack" section, real iOS steps in place of the two placeholders (scheme, simulator, first-build time, `xcodebuild test` as well as ⌘U), and a timed run from a fresh clone to prove the under-10-minutes target, fixing anything that trips it up; (2) DECISIONS: reword "agreed with the product owner" to assumptions I made and recorded, add "assumptions at a glance" linking every gap to its entry, record AC-3's search button as the keyboard's Search key and why `pageSize` is at most 50 with a 400 above it, and add "load more" to what's next; (3) backend: `pageSize`'s message to "must be between 1 and 50", with a test; (4) this file: a "key moments" section with the 5 that shaped the solution most; (5) a layout pass on every screen with theme tokens only: light and dark, iPhone SE and Pro Max, long titles, and the loading, empty and error states; (6) `FRONTEND_ARCHITECTURE.md` brought up to date. Checks: backend and iOS tests, both schemes, no warnings, and an AC-1 to AC-5 walkthrough with the email checked in Mailpit. | Blueprint v0.28. D-045 (the Search key), D-046 (`pageSize`) and D-047 (the sales inbox), plus "assumptions at a glance". The key moments above. The fresh-clone run (Docker 21 s, first Xcode build 15 s, products on screen about 2 s after launch) caught two trip-ups: `xcodebuild -destination 'name=iPhone 16'` without `OS=` only looks at the newest iOS runtime and finds no device, and `.env.example`'s first line still said to copy it to `.env`. The layout pass, on SE, iPhone 16 and Pro Max in light and dark, changed token values and how views use them: grouped background colours (Home's tiles disappeared into the list cell in dark mode, and its spinner showed white before a grey list), rows that show 2.3 tiles so the next one peeks (on the SE they ended on a whole tile), and a full-width Enquire button (its frame was on the button rather than its label). |
 | <a id="p-26"></a>P-26 | 2026-11-27 | **Phase 3.2, last tidy-up, then the PRs.** (1) `AI_USAGE.md` should read as 3-5 key prompts, as the brief asks, not 25: move this whole table to `docs/PROMPT_LOG.md`, link to it in one line, fix every link to the old section, and log new prompts here from now on. (2) Three review nits: an over-indented `.background` in `ProductDetailView`, the README saying the container runs on Lambda (Express needs an adapter there), and `q` over 100 characters still giving zod's default "Too big" message. (3) A "Time spent" section in the README with the developer's real figures, kept honest even over the time-box. (4) Checks, including no broken links in the markdown. (5) Push `feature/product-catalogue-ios` and open its PR into `feature/product-catalogue`, without merging. (6) Draft the final PR description into `main`, covering how to check each AC, for review before it's opened. | Blueprint v0.29. This log, split out of `AI_USAGE.md`. |
 | <a id="p-27"></a>P-27 | 2026-11-27 | **Final shape of `AI_USAGE.md`, then the push.** `AI_USAGE.md` should show only the developer's most important prompts and the AI's most important mistakes. Key moments become prompts only, in a given order and wording (swappable boundaries and backend-only data, rules versus blueprint, "top rated" as a business choice, search as a swappable engine, MVVM-C with a navigator per screen), each linking to its P- row and D- entries. The mistakes are W-4, W-3, W-2, W-6 and W-5, in that order, each tightened to what went wrong, how it was caught, what changed and a one-line lesson; W-1 moves here under "Other corrections". `CLAUDE.md`'s rule changes to match (prompts here, mistakes in `AI_USAGE.md`). The README gets the time spent (planning ~5 h, building ~3 h, testing ~0.5 h, reviewing ~4 h, total ~12.5 h). The final PR draft gets the iOS count Xcode shows (78 tests, 123 runs; the AI's "122" matched neither), a line on the PR history, the new key moments, and an accurate time-box sentence. Then push the iOS branch. | `AI_USAGE.md` rewritten; tools, setup and W-1 moved here; row anchors for linking; W-7 records the wrong test count. |
+| <a id="p-28"></a>P-28 | 2026-11-27 | **The brief's AI usage sections back in `AI_USAGE.md`.** Working on `feature/product-catalogue` now that the iOS PR (#2) is merged, small commits, no push. The brief also wants tools and models used, the agent instruction files (`CLAUDE.md`, committed in the repo) and the plan or spec in `AI_USAGE.md` itself: move those three sections back from this log as short sections between the key moments and the mistakes, keep the 5 key moments and 5 mistakes exactly as they are, take them out of this log so they aren't in two places, and fix the links. | Three short sections in `AI_USAGE.md`, removed from this log; the README's descriptions of the two files updated. |
 
 ## Other corrections
 
