@@ -21,8 +21,8 @@ NestJS felt too heavy for a proof of concept, and Laravel would add a PHP toolch
 - [`docs/FRONTEND_ARCHITECTURE.md`](docs/FRONTEND_ARCHITECTURE.md): a guide to the iOS app, part by part, linking to the blueprint
 - [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md): a quick reference for API callers
 - [`DECISIONS.md`](DECISIONS.md): why things are the way they are
-- [`AI_USAGE.md`](AI_USAGE.md): how AI was used, the five key moments, and what it got wrong
-- [`docs/PROMPT_LOG.md`](docs/PROMPT_LOG.md): every prompt that shaped the work, with the decision it led to
+- [`AI_USAGE.md`](AI_USAGE.md): my five most important prompts and the AI's five most important mistakes
+- [`docs/PROMPT_LOG.md`](docs/PROMPT_LOG.md): every prompt that shaped the work, with the decision it led to, plus the AI tools and setup and the smaller corrections
 
 ## Prerequisites
 
@@ -114,6 +114,14 @@ xcodebuild test -project iOS/ANSR/ANSR.xcodeproj -scheme "ANSR Debug" -destinati
 ```
 
 Use an iPhone and iOS version you have installed (`xcrun simctl list devices available` lists them). Give both `name` and `OS`: without `OS`, xcodebuild looks only at the newest iOS runtime, which may not have that iPhone. The iOS tests use test doubles and never call the backend, so it doesn't need to be running.
+
+## Time spent
+
+| Planning | Building | Testing | Reviewing | Total |
+|---|---|---|---|---|
+| ~5 h | ~3 h | ~0.5 h | ~4 h | **~12.5 h** |
+
+Building is counted from the code commits, at about 5 minutes each; most tests were written inside those commits. That's well over the 2–3 hour time-box. Most of the extra time went into planning (the blueprint and the decisions, before any code) and reviewing (checking every change and walking through each acceptance criterion on the simulator), not into building.
 
 ## Configuration
 
