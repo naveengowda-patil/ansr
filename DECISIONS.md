@@ -518,6 +518,18 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
 - **Trade-off:** one check of a test-only marker lives in app code. It is in the bootstrapper, has its own test, and builds less rather than more.
 - **Blueprint:** §7.7, §9.2
 
+### D-044 — After Cancel, put back exactly one more system clear
+- **Decision:** On a Search results screen, when search mode ends without a submit, `SearchResultsViewModel` sets its query and expects one more `""` from the system. That one is put back; every other write to the field is kept. The expectation is dropped once used or when search mode starts again.
+- **Why:**
+  - Logging the bindings at runtime showed Cancel always writes `""`, ends search mode, then writes `""` once more. The ✕ outside search mode writes `""` before search mode starts.
+  - The v0.26 rule (put back every write while search mode is off) caught the second `""` but also swallowed the ✕'s, so clearing took two taps.
+  - The order of the writes is enough to tell them apart, so the rule needs no clock and tests need no waiting.
+- **Alternatives considered:**
+  - A short time window after Cancel (`asyncAfter`, a timer): depends on timing, and tests would have to wait. Rejected.
+  - Clearing the text in the view with `onChange`: moves a rule out of the view model, and the write order is the same.
+- **Trade-off:** it relies on the system's write order on iOS 18. If a later iOS stopped sending the extra `""`, the next ✕ tap outside search mode would be put back once (one extra tap), not lost data. The walkthrough in §7.8 is the check to repeat on a new iOS.
+- **Blueprint:** §7.8, §7.8.3, §9.2
+
 ---
 
 ## Process
