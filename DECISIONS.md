@@ -2,7 +2,29 @@
 
 Assumptions and trade-offs that fill gaps in the acceptance criteria. The blueprint ([`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)) says *what* is built. This file records *why*.
 
-All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 and 2026-11-26. Each one links to the blueprint section it shapes. When a decision changes, update the blueprint first, then the entry here.
+These are assumptions I made where the acceptance criteria were unclear or silent. I recorded each one here and moved on, rather than stopping to wait for an answer. Each links to the blueprint section it shapes. When a decision changes, update the blueprint first, then the entry here.
+
+## Assumptions at a glance
+
+One line per gap in the acceptance criteria ([blueprint §2](docs/BLUEPRINT.md#2-acceptance-criteria)). The entries below give the reasons.
+
+| Gap in the criteria | What I assumed | Entry |
+|---|---|---|
+| AC-1: who picks the 5 "top rated" products, and how | The business, as an ordered list of product ids in config (`FEATURED_PRODUCT_IDS`). Missing ids are skipped and the list is topped up to 5 by rating. | [D-002](#d-002--home-top-rated-is-a-configured-ordered-list) |
+| AC-1, AC-2: what "top rated" means when ratings tie | Rating, then review count, then id. | [D-003](#d-003--ranking-tie-break) |
+| AC-2: how many top rated a category shows | 3, then the rest of the category in upstream order, with no duplicates. | [D-004](#d-004--category-view--3-top-rated-then-the-rest) |
+| AC-2: how a user finds a category to open | A `GET /categories` endpoint, shown as rows on Home. | [D-005](#d-005--add-get-categories), [D-035](#d-035--home-layout) |
+| AC-3: which fields search matches | The trimmed term, as a case-insensitive phrase, in the title, description or category. Filtering happens in the backend. | [D-007](#d-007--search-matching) |
+| AC-3: what "click the search button" is on iOS | The keyboard's Search key in the always-visible search field. | [D-045](#d-045--ac-3s-click-the-search-button-is-the-keyboards-search-key) |
+| AC-3: how many results, and paging | The app asks for page 1 at 20 per page, which covers the 20-product catalogue. The API allows up to 50 per page, and asking for more is a 400. | [D-024](#d-024--small-api-shape-choices), [D-046](#d-046--pagesize-is-at-most-50-and-a-bigger-value-is-a-400) |
+| AC-3: searching again from the results | A new results screen is pushed, so Back returns to the previous search. | [D-037](#d-037--searching-again-pushes-a-new-results-screen) |
+| AC-4: where the detail screen gets its data | It fetches the product by id. | [D-012](#d-012--product-detail-fetches-by-id) |
+| AC-5: what the enquiry form asks for | Name and email, required; a message, optional. Lengths, line breaks and the email format are checked the same way on the app and the backend. | [D-010](#d-010--enquiry-rules), [D-038](#d-038--enquiry-sheet-rules) |
+| AC-5: where the sales inbox is | `SALES_INBOX_EMAIL` in config. Locally, Mailpit catches every email at http://localhost:8025. | [D-047](#d-047--the-sales-inbox-is-a-config-value-mailpit-catches-it-locally) |
+| AC-5: what the sales email looks like | Plain text, with `Reply-To` set to the customer. | [D-010](#d-010--enquiry-rules) |
+| Prices have no currency in the data | USD, set by the Fake Store adapter. | [D-020](#d-020--currency-field-set-by-the-adapter) |
+| What happens when Fake Store is down | A cached copy up to 24 hours old is served; after that, a 502 with Retry in the app. | [D-011](#d-011--how-the-cache-works-stale-while-revalidate-with-back-off-and-a-24-h-cap) |
+| What an error looks like | One envelope with four codes. | [D-009](#d-009--one-error-envelope-four-codes) |
 
 ---
 
@@ -209,6 +231,25 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
   - iOS search sends only `q` and asks for page 1 at the default size of 20. That covers the 20-product catalogue, so there is no pagination UI.
   - On product detail, a 404 shows as the empty state ("no longer available"), not as an error.
 - **Blueprint:** §6, §7.8
+
+### D-046 — `pageSize` is at most 50, and a bigger value is a 400
+- **Decision:** `GET /products` takes `pageSize` from 1 to 50, with a default of 20. A value over 50 gets a 400 `VALIDATION_ERROR` with the message `pageSize: must be between 1 and 50`. It is never lowered to 50 quietly.
+- **Why a maximum of 50:**
+  - It bounds the work and the response size of one request. Each product carries its description; images are fetched separately.
+  - 50 is more than twice the default page and more than the whole current catalogue, so no real client is held back.
+  - Once the catalogue is a real store, no single request can ask for all of it.
+- **Why a 400 rather than lowering it:**
+  - A client that asked for 100 and quietly got 50 could take a short page as the end of the results, or work out the wrong page offsets.
+  - It is the API's rule everywhere: input it can't honour is rejected, with a message naming the parameter (D-008, D-009), rather than answered with something other than what was asked for.
+- **Blueprint:** §6.4
+
+### D-047 — The sales inbox is a config value; Mailpit catches it locally
+- **Decision:** Enquiries go to `SALES_INBOX_EMAIL` (default `sales@example.com`), from `MAIL_FROM`. Locally, Mailpit catches every email: nothing leaves the machine, and the inbox is at http://localhost:8025.
+- **Why:**
+  - The brief names no address or provider. A config value lets the business set the real inbox without a code change.
+  - Mailpit needs no account and costs nothing, as the constraints require (§3).
+- **In production:** Amazon SES over SMTP, by config alone (see "How it grows").
+- **Blueprint:** §5.8, §5.10, §8.2
 
 ### D-027 — Search returns ids; the store loads the products
 - **Decision:** The engine returns ids, and the repository loads the products in one batched `getByIds`.
@@ -434,6 +475,15 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
 - **Trade-off:** many searches build a deep stack, which is acceptable for a proof of concept.
 - **Blueprint:** §7.4, §7.8.3
 
+### D-045 — AC-3's "click the search button" is the keyboard's Search key
+- **Decision:** AC-3 says "click the search button". On iOS that is the Search key on the keyboard of the always-visible search field (`.searchable`, submitted with `.onSubmit(of: .search)`). There is no separate button.
+- **Why:**
+  - It is the standard iOS search pattern: the system search field brings up a keyboard whose return key reads "Search", and that is where iPhone users submit a search (Settings, Mail, the App Store).
+  - A second button beside the field would do the same thing and take space from the navigation bar.
+  - The criterion still holds exactly: search runs only on that explicit submit, never while typing, and the key is disabled while the field is empty.
+- **Trade-off:** the "button" is on the keyboard rather than on the screen. A reviewer looking for an on-screen button won't find one, which is why it is recorded here.
+- **Blueprint:** §2 AC-3, §7.8
+
 ### D-038 — Enquiry sheet rules
 - **Decision:**
   - Name, email and message live in the view model.
@@ -590,6 +640,7 @@ All entries below were agreed with the product owner on 2026-11-22, 2026-11-25 a
 - **Move the iOS project to Tuist.**
   - The project is generated from a Swift manifest, so there are no `.xcodeproj` merge conflicts.
   - It splits into modules: `Core`, `Networking`, `DesignSystem`, `Features`.
+- **"Load more" on iOS search results.** The app only asks for page 1 (20 products), which covers today's 20-product catalogue (D-024). With a bigger catalogue, the grid would load the next page as the user reaches the end, using the `page` and `total` the API already returns.
 - **Switch search to cursor-based paging.**
   - Today paging is offset-based (`page`, `pageSize`).
   - If the catalogue refreshes mid-browse, items can shift between pages, so a user may see one twice or miss one.
